@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - claude/board-game-setup-helper-aomacy
   workflow_dispatch:
 
 permissions:
