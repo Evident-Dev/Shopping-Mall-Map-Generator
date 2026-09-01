@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mall Map Generator</title>
+<style>
+  :root {
+    --bg: #f4f1ea;
+    --ink: #2b2b2b;
+    --panel: #ffffff;
+    --plaza: #d7e8c9;
+    --plaza-line: #7ba05b;
+    --store: #cfe0f5;
+    --store-line: #4a7ab5;
+    --bigstore: #f5d9c8;
+    --bigstore-line: #c2703d;
+    --hall: #e8e4da;
+    --hall-line: #9a938a;
+    --security: #f2c4c4;
+    --security-line: #b04a4a;
+    --escalator: #e3d2f0;
+    --escalator-line: #7d4fa8;
+    --tunnel: #d9d2c0;
+    --tunnel-line: #6e6650;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+  }
+  header {
+    padding: 14px 20px 6px;
+  }
+  header h1 { margin: 0 0 2px; font-size: 22px; }
+  header p { margin: 0; font-size: 13px; color: #666; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-end;
+    padding: 10px 20px;
+  }
+  .controls label {
+    display: flex;
+    flex-direction: column;
+    font-size: 12px;
+    font-weight: 600;
+    gap: 3px;
+  }
+  .controls input, .controls select {
+    padding: 6px 8px;
+    font-size: 14px;
+    border: 1px solid #bbb;
+    border-radius: 6px;
+    width: 90px;
+    background: #fff;
+  }
+  .controls button {
+    padding: 8px 16px;
+    font-size: 14px;
+    font-weight: 700;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    background: #2f6f4f;
+    color: #fff;
+  }
+  .controls button.secondary { background: #666; }
+  .controls button:hover { filter: brightness(1.1); }
+  #board-wrap {
+    padding: 4px 20px 12px;
+    overflow-x: auto;
+  }
+  svg { background: var(--panel); border: 1px solid #ccc; border-radius: 8px; display: block; }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding: 0 20px 10px;
+    font-size: 13px;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i {
+    width: 16px; height: 16px; border-radius: 3px; display: inline-block;
+    border: 2px solid transparent;
+  }
+  #summary {
+    padding: 0 20px 24px;
+    font-size: 13px;
+    color: #555;
+    max-width: 900px;
+  }
+  @media print {
+    .controls, .legend, #summary, header p { display: none; }
+    body { background: #fff; }
+    svg { border: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mall Map Generator</h1>
+  <p>Board setup helper. Each map: 2 plazas, 2 big stores per plaza (player start zones), stores off hallways and plazas only.</p>
+</header>
+
+<div class="controls">
+  <label>Seed
+    <input type="text" id="seed" value="mall-1">
+  </label>
+  <label>Stores
+    <input type="number" id="numStores" value="8" min="0" max="20">
+  </label>
+  <label>Escalators
+    <input type="number" id="numEscalators" value="1" min="0" max="4">
+  </label>
+  <label>Tunnels
+    <input type="number" id="numTunnels" value="4" min="0" max="10">
+  </label>
+  <button id="generate">Generate</button>
+  <button id="randomize" class="secondary">Random Seed</button>
+  <button id="print" class="secondary">Print</button>
+</div>
+
+<div class="legend">
+  <span><i style="background:var(--plaza);border-color:var(--plaza-line)"></i>Plaza 6&times;6</span>
+  <span><i style="background:var(--bigstore);border-color:var(--bigstore-line)"></i>Big Store 2&times;4 (start zone)</span>
+  <span><i style="background:var(--store);border-color:var(--store-line)"></i>Store 2&times;1</span>
+  <span><i style="background:var(--hall);border-color:var(--hall-line)"></i>Hallway 2&times;1</span>
+  <span><i style="background:var(--security);border-color:var(--security-line)"></i>Security Room 2&times;1</span>
+  <span><i style="background:var(--escalator);border-color:var(--escalator-line)"></i>Escalator 2&times;1 (one-way)</span>
+  <span><i style="background:var(--tunnel);border-color:var(--tunnel-line)"></i>Access Tunnel 1&times;1</span>
+  <span>&#9632; = door / access side</span>
+</div>
+
+<div id="board-wrap"></div>
+<div id="summary"></div>
+
+<script>
+"use strict";
+
+// ---------- seeded RNG ----------
+function hashSeed(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// ---------- board model ----------
+const GW = 26, GH = 14, CELL = 34;
+
+// piece: {type, x, y, w, h, doors:[{x,y,side}], meta}
+// doors mark the access side, drawn as small squares on the edge.
+
+function makeGrid() {
+  const g = [];
+  for (let y = 0; y < GH; y++) g.push(new Array(GW).fill(null));
+  return g;
+}
+function fits(grid, x, y, w, h) {
+  if (x < 0 || y < 0 || x + w > GW || y + h > GH) return false;
+  for (let yy = y; yy < y + h; yy++)
+    for (let xx = x; xx < x + w; xx++)
+      if (grid[yy][xx]) return false;
+  return true;
+}
+function place(grid, pieces, piece) {
+  for (let yy = piece.y; yy < piece.y + piece.h; yy++)
+    for (let xx = piece.x; xx < piece.x + piece.w; xx++)
+      grid[yy][xx] = piece;
+  pieces.push(piece);
+  return piece;
+}
+function cellIs(grid, x, y, types) {
+  if (x < 0 || y < 0 || x >= GW || y >= GH) return false;
+  const p = grid[y][x];
+  return !!p && types.includes(p.type);
+}
+
+function generate(seedStr, opts) {
+  const rnd = mulberry32(hashSeed(seedStr));
+  const grid = makeGrid();
+  const pieces = [];
+  const notes = [];
+
+  // --- 1. plazas: left and right ---
+  const plazaY = 4; // rows 4-9, leaves 4 rows above and below for big stores
+  const plazaL = place(grid, pieces, { type: "plaza", x: 1, y: plazaY, w: 6, h: 6, doors: [], label: "PLAZA A" });
+  const plazaR = place(grid, pieces, { type: "plaza", x: GW - 7, y: plazaY, w: 6, h: 6, doors: [], label: "PLAZA B" });
+
+  // --- 2. big stores: 2 per plaza, long side (4-long) flush to plaza top/bottom ---
+  // horizontal 4w x 2h, door row faces the plaza
+  let playerNum = 1;
+  for (const plaza of [plazaL, plazaR]) {
+    const spots = [
+      { x: plaza.x, y: plaza.y - 2, side: "bottom" },      // above plaza, door on bottom
+      { x: plaza.x + 2, y: plaza.y - 2, side: "bottom" },
+      { x: plaza.x, y: plaza.y + plaza.h, side: "top" },   // below plaza, door on top
+      { x: plaza.x + 2, y: plaza.y + plaza.h, side: "top" },
+    ];
+    // shuffle
+    for (let i = spots.length - 1; i > 0; i--) {
+      const j = Math.floor(rnd() * (i + 1));
+      [spots[i], spots[j]] = [spots[j], spots[i]];
+    }
+    let placed = 0;
+    for (const s of spots) {
+      if (placed >= 2) break;
+      if (fits(grid, s.x, s.y, 4, 2)) {
+        place(grid, pieces, {
+          type: "bigstore", x: s.x, y: s.y, w: 4, h: 2,
+          doors: [{ side: s.side }],
+          label: "BIG STORE\nP" + playerNum + " START",
+        });
+        playerNum++;
+        placed++;
+      }
+    }
+    if (placed < 2) notes.push("Could not fit 2 big stores on " + plaza.label + ".");
+  }
+
+  // --- 3. hallway corridor between plazas, with a vertical jog ---
+  // corridor row at a plaza-adjacent height; jog picks a different row for second half
+  const rowChoices = [plazaY + 1, plazaY + 2, plazaY + 3, plazaY + 4];
+  const rowA = rowChoices[Math.floor(rnd() * rowChoices.length)];
+  let rowB = rowChoices[Math.floor(rnd() * rowChoices.length)];
+  const jogX = 10 + Math.floor(rnd() * 5); // column where corridor jogs, 10..14
+  const corridorCells = [];
+  for (let x = plazaL.x + plazaL.w; x < jogX; x++) corridorCells.push({ x, y: rowA });
+  const lo = Math.min(rowA, rowB), hi = Math.max(rowA, rowB);
+  for (let y = lo; y <= hi; y++) corridorCells.push({ x: jogX, y });
+  for (let x = jogX + 1; x < plazaR.x; x++) corridorCells.push({ x, y: rowB });
+
+  // tile corridor into 2x1 hallway dominoes; leftover singles become tunnels
+  const corridorSet = new Set(corridorCells.map(c => c.x + "," + c.y));
+  const used = new Set();
+  const leftoverCells = [];
+  for (const c of corridorCells) {
+    const key = c.x + "," + c.y;
+    if (used.has(key)) continue;
+    const rightKey = (c.x + 1) + "," + c.y;
+    const downKey = c.x + "," + (c.y + 1);
+    if (corridorSet.has(rightKey) && !used.has(rightKey) && fits(grid, c.x, c.y, 2, 1)) {
+      place(grid, pieces, { type: "hall", x: c.x, y: c.y, w: 2, h: 1, doors: [] });
+      used.add(key); used.add(rightKey);
+    } else if (corridorSet.has(downKey) && !used.has(downKey) && fits(grid, c.x, c.y, 1, 2)) {
+      place(grid, pieces, { type: "hall", x: c.x, y: c.y, w: 1, h: 2, doors: [] });
+      used.add(key); used.add(downKey);
+    } else if (fits(grid, c.x, c.y, 1, 1)) {
+      leftoverCells.push(c);
+      used.add(key);
+    }
+  }
+  // leftover odd corridor cells become access tunnels (keeps the path connected)
+  for (const c of leftoverCells) {
+    place(grid, pieces, { type: "tunnel", x: c.x, y: c.y, w: 1, h: 1, doors: [], label: "T" });
+  }
+
+  // --- 4. escalators: convert a hallway domino to a one-way escalator ---
+  const halls = pieces.filter(p => p.type === "hall");
+  let esc = 0;
+  for (let i = halls.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [halls[i], halls[j]] = [halls[j], halls[i]];
+  }
+  for (const h of halls) {
+    if (esc >= opts.escalators) break;
+    h.type = "escalator";
+    h.dir = h.w === 2 ? (rnd() < 0.5 ? "right" : "left") : (rnd() < 0.5 ? "down" : "up");
+    esc++;
+  }
+
+  // --- 5. stores: 2x1, long side flush against hallway or plaza only ---
+  const storeSpots = [];
+  // along corridor: store above or below a horizontal pair of corridor cells
+  for (const c of corridorCells) {
+    const rightKey = (c.x + 1) + "," + c.y;
+    if (!corridorSet.has(rightKey)) continue;
+    storeSpots.push({ x: c.x, y: c.y - 1, w: 2, h: 1, side: "bottom" }); // door faces corridor below it
+    storeSpots.push({ x: c.x, y: c.y + 1, w: 2, h: 1, side: "top" });
+  }
+  // along plaza left/right outer edges: vertical stores, long side flush to plaza
+  for (const plaza of [plazaL, plazaR]) {
+    for (let y = plaza.y; y < plaza.y + plaza.h - 1; y++) {
+      storeSpots.push({ x: plaza.x - 1, y, w: 1, h: 2, side: "right" }); // door faces plaza
+      storeSpots.push({ x: plaza.x + plaza.w, y, w: 1, h: 2, side: "left" });
+    }
+  }
+  for (let i = storeSpots.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [storeSpots[i], storeSpots[j]] = [storeSpots[j], storeSpots[i]];
+  }
+  let stores = 0, security = 0;
+  for (const s of storeSpots) {
+    if (stores >= opts.stores && security >= 1) break;
+    if (!fits(grid, s.x, s.y, s.w, s.h)) continue;
+    // verify the door side actually touches hallway or plaza
+    const touchTypes = ["hall", "plaza", "escalator", "tunnel"];
+    let ok = false;
+    if (s.side === "bottom") ok = cellIs(grid, s.x, s.y + 1, touchTypes) && cellIs(grid, s.x + 1, s.y + 1, touchTypes);
+    if (s.side === "top") ok = cellIs(grid, s.x, s.y - 1, touchTypes) && cellIs(grid, s.x + 1, s.y - 1, touchTypes);
+    if (s.side === "right") ok = cellIs(grid, s.x + 1, s.y, touchTypes) && cellIs(grid, s.x + 1, s.y + 1, touchTypes);
+    if (s.side === "left") ok = cellIs(grid, s.x - 1, s.y, touchTypes) && cellIs(grid, s.x - 1, s.y + 1, touchTypes);
+    if (!ok) continue;
+    if (security < 1) {
+      place(grid, pieces, { type: "security", x: s.x, y: s.y, w: s.w, h: s.h, doors: [{ side: s.side }], label: "SEC" });
+      security++;
+    } else {
+      place(grid, pieces, { type: "store", x: s.x, y: s.y, w: s.w, h: s.h, doors: [{ side: s.side }], label: "S" + (stores + 1) });
+      stores++;
+    }
+  }
+  if (stores < opts.stores) notes.push("Placed " + stores + " of " + opts.stores + " stores (ran out of legal spots).");
+
+  // --- 6. extra access tunnels: 1x1 in empty cells adjacent to any piece ---
+  let tunnels = 0;
+  const tunnelSpots = [];
+  for (let y = 0; y < GH; y++)
+    for (let x = 0; x < GW; x++) {
+      if (grid[y][x]) continue;
+      const nearby = [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy]) => cellIs(grid, x+dx, y+dy, ["plaza","hall","store","bigstore","security","escalator"]));
+      if (nearby) tunnelSpots.push({ x, y });
+    }
+  for (let i = tunnelSpots.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [tunnelSpots[i], tunnelSpots[j]] = [tunnelSpots[j], tunnelSpots[i]];
+  }
+  const tunnelLabels = "ABCDE";
+  for (const t of tunnelSpots) {
+    if (tunnels >= opts.tunnels) break;
+    if (!fits(grid, t.x, t.y, 1, 1)) continue;
+    // pair label: tunnels come in linked pairs A-A, B-B, ...
+    const label = tunnelLabels[Math.floor(tunnels / 2) % tunnelLabels.length];
+    place(grid, pieces, { type: "tunnel", x: t.x, y: t.y, w: 1, h: 1, doors: [], label });
+    tunnels++;
+  }
+
+  return { pieces, notes, counts: { stores, security, escalators: esc, tunnels: tunnels + leftoverCells.length } };
+}
+
+// ---------- rendering ----------
+const COLORS = {
+  plaza: ["var(--plaza)", "var(--plaza-line)"],
+  bigstore: ["var(--bigstore)", "var(--bigstore-line)"],
+  store: ["var(--store)", "var(--store-line)"],
+  hall: ["var(--hall)", "var(--hall-line)"],
+  security: ["var(--security)", "var(--security-line)"],
+  escalator: ["var(--escalator)", "var(--escalator-line)"],
+  tunnel: ["var(--tunnel)", "var(--tunnel-line)"],
+};
+
+function render(result) {
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("width", GW * CELL + 2);
+  svg.setAttribute("height", GH * CELL + 2);
+  svg.setAttribute("viewBox", "-1 -1 " + (GW * CELL + 2) + " " + (GH * CELL + 2));
+
+  // faint grid
+  for (let x = 0; x <= GW; x++) {
+    const l = document.createElementNS(svgNS, "line");
+    l.setAttribute("x1", x * CELL); l.setAttribute("y1", 0);
+    l.setAttribute("x2", x * CELL); l.setAttribute("y2", GH * CELL);
+    l.setAttribute("stroke", "#eee");
+    svg.appendChild(l);
+  }
+  for (let y = 0; y <= GH; y++) {
+    const l = document.createElementNS(svgNS, "line");
+    l.setAttribute("x1", 0); l.setAttribute("y1", y * CELL);
+    l.setAttribute("x2", GW * CELL); l.setAttribute("y2", y * CELL);
+    l.setAttribute("stroke", "#eee");
+    svg.appendChild(l);
+  }
+
+  for (const p of result.pieces) {
+    const [fill, stroke] = COLORS[p.type];
+    const r = document.createElementNS(svgNS, "rect");
+    r.setAttribute("x", p.x * CELL + 1.5);
+    r.setAttribute("y", p.y * CELL + 1.5);
+    r.setAttribute("width", p.w * CELL - 3);
+    r.setAttribute("height", p.h * CELL - 3);
+    r.setAttribute("fill", fill);
+    r.setAttribute("stroke", stroke);
+    r.setAttribute("stroke-width", "2");
+    r.setAttribute("rx", "4");
+    svg.appendChild(r);
+
+    // doors: small filled square centered on the access side
+    for (const d of (p.doors || [])) {
+      const dr = document.createElementNS(svgNS, "rect");
+      const size = 10;
+      let dx, dy;
+      if (d.side === "top")    { dx = p.x * CELL + (p.w * CELL) / 2 - size / 2; dy = p.y * CELL - size / 2 + 1.5; }
+      if (d.side === "bottom") { dx = p.x * CELL + (p.w * CELL) / 2 - size / 2; dy = (p.y + p.h) * CELL - size / 2 - 1.5; }
+      if (d.side === "left")   { dx = p.x * CELL - size / 2 + 1.5; dy = p.y * CELL + (p.h * CELL) / 2 - size / 2; }
+      if (d.side === "right")  { dx = (p.x + p.w) * CELL - size / 2 - 1.5; dy = p.y * CELL + (p.h * CELL) / 2 - size / 2; }
+      dr.setAttribute("x", dx); dr.setAttribute("y", dy);
+      dr.setAttribute("width", size); dr.setAttribute("height", size);
+      dr.setAttribute("fill", stroke);
+      svg.appendChild(dr);
+    }
+
+    // escalator one-way arrow
+    if (p.type === "escalator") {
+      const cx = p.x * CELL + (p.w * CELL) / 2;
+      const cy = p.y * CELL + (p.h * CELL) / 2;
+      const a = document.createElementNS(svgNS, "path");
+      const s = 9;
+      let dpath;
+      if (p.dir === "right") dpath = `M ${cx - s} ${cy - s} L ${cx + s} ${cy} L ${cx - s} ${cy + s} Z`;
+      if (p.dir === "left")  dpath = `M ${cx + s} ${cy - s} L ${cx - s} ${cy} L ${cx + s} ${cy + s} Z`;
+      if (p.dir === "down")  dpath = `M ${cx - s} ${cy - s} L ${cx} ${cy + s} L ${cx + s} ${cy - s} Z`;
+      if (p.dir === "up")    dpath = `M ${cx - s} ${cy + s} L ${cx} ${cy - s} L ${cx + s} ${cy + s} Z`;
+      a.setAttribute("d", dpath);
+      a.setAttribute("fill", "var(--escalator-line)");
+      svg.appendChild(a);
+    }
+
+    // label
+    if (p.label) {
+      const lines = p.label.split("\n");
+      const fontSize = p.w >= 4 || p.type === "plaza" ? 12 : 10;
+      lines.forEach((line, i) => {
+        const t = document.createElementNS(svgNS, "text");
+        t.setAttribute("x", p.x * CELL + (p.w * CELL) / 2);
+        t.setAttribute("y", p.y * CELL + (p.h * CELL) / 2 + (i - (lines.length - 1) / 2) * (fontSize + 2) + 4);
+        t.setAttribute("text-anchor", "middle");
+        t.setAttribute("font-size", fontSize);
+        t.setAttribute("font-weight", "700");
+        t.setAttribute("fill", "#333");
+        t.textContent = line;
+        svg.appendChild(t);
+      });
+    }
+  }
+  return svg;
+}
+
+// ---------- wiring ----------
+function run() {
+  const seed = document.getElementById("seed").value || "mall";
+  const opts = {
+    stores: +document.getElementById("numStores").value || 0,
+    escalators: +document.getElementById("numEscalators").value || 0,
+    tunnels: +document.getElementById("numTunnels").value || 0,
+  };
+  const result = generate(seed, opts);
+  const wrap = document.getElementById("board-wrap");
+  wrap.innerHTML = "";
+  wrap.appendChild(render(result));
+  const c = result.counts;
+  let html = `<b>Seed:</b> ${seed} &nbsp; <b>Placed:</b> 2 plazas, 4 big stores, ${c.stores} stores, ${c.security} security room, ${c.escalators} escalator(s), ${c.tunnels} tunnel(s).`;
+  html += `<br>Matching tunnel letters are linked to each other. Escalator arrows show the one-way direction. Filled squares mark each room's access side.`;
+  if (result.notes.length) html += "<br><b>Notes:</b> " + result.notes.join(" ");
+  document.getElementById("summary").innerHTML = html;
+}
+
+document.getElementById("generate").addEventListener("click", run);
+document.getElementById("randomize").addEventListener("click", () => {
+  document.getElementById("seed").value = "mall-" + Math.floor(Math.random() * 100000);
+  run();
+});
+document.getElementById("print").addEventListener("click", () => window.print());
+run();
+</script>
+</body>
+</html>
