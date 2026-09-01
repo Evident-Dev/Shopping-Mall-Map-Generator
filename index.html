@@ -41,6 +41,7 @@
   .controls input.raised { border: 2px solid var(--wall); }
   .controls button.secondary { background: #666; }
   .controls button:hover { filter: brightness(1.1); }
+  .controls button:disabled { background: #aaa; cursor: default; filter: none; }
   #board-wrap { padding: 4px 20px 12px; overflow-x: auto; }
   svg { background: #1c1a22; border: 1px solid #ccc; border-radius: 8px; display: block; }
   .legend {
@@ -78,7 +79,7 @@
     <input type="checkbox" id="lockBigStores" style="width:auto"> Lock large store to plaza
   </label>
   <button id="generate">Generate</button>
-  <button id="randomize" class="secondary">Random seed</button>
+  <button id="randomize">Generate new seed</button>
   <button id="starter" class="secondary">Starter mall</button>
   <button id="save" class="secondary">Save</button>
 </div>
@@ -854,6 +855,24 @@ function run(starter) {
   let html = `<b>Seed:</b> ${seed} &nbsp; 2 plazas (${c.hallsApart} halls apart), ${plural(c.halls, "hall")}, ${plural(c.bigStores, "big store")}, ${plural(c.stores, "store")}, ${plural(c.security, "security room")}, ${plural(c.escalators, "escalator")}, ${plural(c.tunnelPairs, "tunnel pair")}.`;
   if (result.notes.length) html += "<br><b>Notes:</b> " + result.notes.join(" ");
   document.getElementById("summary").innerHTML = html;
+  // Generate stays off until a setting changes from what is on the board.
+  // After the starter mall the boxes describe a different map, so it stays on.
+  lastGenerated = starter ? null : settingsNow();
+  refreshGenerateButton();
+}
+
+const SETTING_IDS = ["seed", "numHalls", "numStores", "numEscalators", "numTunnelPairs", "lockBigStores"];
+const settingsNow = () => SETTING_IDS.map(id => {
+  const box = document.getElementById(id);
+  return box.type === "checkbox" ? box.checked : box.value;
+}).join("|");
+let lastGenerated = null;
+function refreshGenerateButton() {
+  document.getElementById("generate").disabled = lastGenerated !== null && settingsNow() === lastGenerated;
+}
+for (const id of SETTING_IDS) {
+  document.getElementById(id).addEventListener("input", refreshGenerateButton);
+  document.getElementById(id).addEventListener("change", refreshGenerateButton);
 }
 
 document.getElementById("generate").addEventListener("click", () => run());
