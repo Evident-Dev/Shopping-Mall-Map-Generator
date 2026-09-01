@@ -266,15 +266,19 @@ function generate(seedStr, opts) {
   if (stores < opts.stores) notes.push("Placed " + stores + " of " + opts.stores + " stores (ran out of legal spots).");
 
   // --- 6. access tunnels: lettered pairs A/B/C, one open edge each ---
+  const OPPOSITE = { top: "bottom", bottom: "top", left: "right", right: "left" };
   const tunnelSpots = [];
   for (let y = 0; y < GH; y++)
     for (let x = 0; x < GW; x++) {
       if (grid[y][x]) continue;
       for (const [dx, dy, side] of [[1,0,"right"],[-1,0,"left"],[0,1,"bottom"],[0,-1,"top"]]) {
-        if (cellIs(grid, x + dx, y + dy, WALKABLE)) {
-          tunnelSpots.push({ x, y, side });
-          break;
-        }
+        const nx = x + dx, ny = y + dy;
+        if (!cellIs(grid, nx, ny, WALKABLE)) continue;
+        // the neighbor's facing edge must be open (blue), not a wall
+        const n = grid[ny][nx];
+        if (!(n.openSides || []).includes(OPPOSITE[side])) continue;
+        tunnelSpots.push({ x, y, side });
+        break;
       }
     }
   shuffle(tunnelSpots, rnd);
