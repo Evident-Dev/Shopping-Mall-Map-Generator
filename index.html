@@ -615,9 +615,10 @@ function run(starter) {
     }
   } else {
     // the box is a minimum: raise it one hall at a time and retry until the
-    // smallest count that fits every store is found. At each count a few
-    // redraws are tried, keeping the one with the fewest empty halls.
+    // smallest count that fits every store and tunnel pair is found. At each
+    // count a few redraws are tried, keeping the one with the fewest empty halls.
     const askedHalls = opts.halls;
+    const wantedTunnelPairs = Math.min(opts.tunnelPairs, 3);
     const REDRAWS = 12, MAX_HALLS = 60;
     let fitting = null;
     for (let halls = askedHalls; halls <= MAX_HALLS && !fitting; halls++) {
@@ -625,7 +626,7 @@ function run(starter) {
       for (let k = 0; k < REDRAWS; k++) {
         const r = generate(k ? seed + "~" + k : seed, opts);
         result = r;
-        if (r.counts.stores < opts.stores) continue;
+        if (r.counts.stores < opts.stores || r.counts.tunnelPairs < wantedTunnelPairs) continue;
         if (!fitting || r.counts.emptyHalls < fitting.counts.emptyHalls) fitting = r;
         if (r.counts.emptyHalls === 0) break;
       }
