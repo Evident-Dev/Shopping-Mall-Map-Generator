@@ -7,7 +7,7 @@ https://evident-dev.github.io/Shopping-Mall-Map-Generator/
 
 1. Type a seed, or click **Random seed**.
 2. Set halls, stores, escalators and tunnel pairs. Halls is a minimum and goes up on its own when the stores need more room.
-3. Click **Generate**, then **Print**. **Starter mall** gives the first-game layout.
+3. Click **Generate**, then **Save**. **Starter mall** gives the first-game layout, which is what the page opens on.
 
 ## Seeds
 

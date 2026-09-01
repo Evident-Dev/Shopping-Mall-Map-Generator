@@ -66,7 +66,7 @@
     <input type="number" id="numHalls" value="6" min="4" max="40">
   </label>
   <label>Stores
-    <input type="number" id="numStores" value="8" min="0" max="26">
+    <input type="number" id="numStores" value="16" min="0" max="26">
   </label>
   <label>Escalators
     <input type="number" id="numEscalators" value="1" min="0" max="8">
@@ -232,26 +232,55 @@ function generate(seedStr, opts) {
   }
 
   // --- 4. escalators: prefer converting mirrored hallway pairs ---
+  // escalators may chain, but a chain all runs one way: a new escalator
+  // takes the direction of any escalator it touches, and is skipped when
+  // those disagree or run across it
   let esc = 0;
   const halls = () => pieces.filter(p => p.type === "hall" && p.w === 2);
+  const neighbours = h => ALL_OPEN.flatMap(side => sideCells(h, side))
+    .map(([cx, cy]) => (cx < 0 || cy < 0 || cx >= GW || cy >= GH) ? null : grid[cy][cx]);
+  const touchesPiece = (h, other) => neighbours(h).includes(other);
+  const runsAlong = (h, dir) => (h.w === 2) === (dir === "left" || dir === "right");
+  // null: free choice; false: no legal direction; otherwise the required one
+  function forcedDir(h) {
+    const dirs = new Set(neighbours(h).filter(n => n && n.type === "escalator").map(n => n.dir));
+    if (!dirs.size) return null;
+    if (dirs.size > 1) return false;
+    const [dir] = dirs;
+    return runsAlong(h, dir) ? dir : false;
+  }
+  const randomDir = h => h.w === 2 ? (rnd() < 0.5 ? "right" : "left") : (rnd() < 0.5 ? "down" : "up");
   function toEscalator(h, dir) {
     h.type = "escalator";
     h.dir = dir;
     h.openSides = h.w === 2 ? ["left", "right"] : ["top", "bottom"];
   }
+  // a mirrored pair runs in opposite directions, so a pair that touches
+  // cannot chain; those halls are left to the single pass
+  function mirrorPair(h) {
+    return pieces.find(p => p !== h && p.type === "hall" && p.w === h.w && p.h === h.h && p.y === h.y && p.x === mirrorX(h));
+  }
+  function convertPair(h, m, dir) {
+    if (touchesPiece(h, m)) return false;
+    const fh = forcedDir(h), fm = forcedDir(m);
+    if (fh === false || fm === false) return false;
+    dir = fh || (fm ? mirrorDirName(fm) : dir);
+    if (fm && fm !== mirrorDirName(dir)) return false;
+    toEscalator(h, dir);
+    toEscalator(m, mirrorDirName(dir));
+    return true;
+  }
   for (const h of shuffle(halls(), rnd)) {
     if (esc + 2 > opts.escalators) break;
     if (h.type !== "hall") continue;
-    const m = pieces.find(p => p !== h && p.type === "hall" && p.w === 2 && p.y === h.y && p.x === mirrorX(h));
-    if (!m) continue;
-    const dir = rnd() < 0.5 ? "right" : "left";
-    toEscalator(h, dir);
-    toEscalator(m, mirrorDirName(dir));
-    esc += 2;
+    const m = mirrorPair(h);
+    if (m && convertPair(h, m, randomDir(h))) esc += 2;
   }
   for (const h of shuffle(halls(), rnd)) {
     if (esc >= opts.escalators) break;
-    toEscalator(h, rnd() < 0.5 ? "right" : "left");
+    const forced = forcedDir(h);
+    if (forced === false) continue;
+    toEscalator(h, forced || randomDir(h));
     esc++;
   }
 
@@ -398,18 +427,18 @@ function generate(seedStr, opts) {
   // those sides cannot cut a hall off
   const longSidesClear = h => longSidesOf(h).every(side =>
     sideCells(h, side).every(([cx, cy]) => !cellIs(grid, cx, cy, ["hall", "escalator"])));
-  const spurEscalatorDir = h => h.w === 2 ? (rnd() < 0.5 ? "right" : "left") : (rnd() < 0.5 ? "down" : "up");
   for (const h of shuffle(pieces.filter(p => p.type === "hall" && p.depth > 0), rnd)) {
     if (esc >= opts.escalators) break;
     if (h.type !== "hall" || !longSidesClear(h)) continue;
-    const dir = spurEscalatorDir(h);
-    toEscalator(h, dir);
-    esc++;
-    const m = pieces.find(p => p !== h && p.type === "hall" && p.w === h.w && p.y === h.y && p.x === mirrorX(h));
-    if (m && esc < opts.escalators && longSidesClear(m)) {
-      toEscalator(m, mirrorDirName(dir));
-      esc++;
+    const m = mirrorPair(h);
+    if (m && esc + 2 <= opts.escalators && longSidesClear(m) && convertPair(h, m, randomDir(h))) {
+      esc += 2;
+      continue;
     }
+    const forced = forcedDir(h);
+    if (forced === false) continue;
+    toEscalator(h, forced || randomDir(h));
+    esc++;
   }
 
   const ROOMS = ["store", "security"];
@@ -613,6 +642,9 @@ function render(result, seedStr) {
 }
 
 // ---------- wiring ----------
+// first-game layout: fixed settings, whatever the boxes say
+const STARTER = { halls: 6, stores: 15, escalators: 0, tunnelPairs: 0, starter: true };
+
 function run(starter) {
   const seed = document.getElementById("seed").value || "mall";
   const hallsBox = document.getElementById("numHalls");
@@ -623,12 +655,12 @@ function run(starter) {
     box.value = value;
     return value;
   };
-  const opts = {
+  const opts = starter ? { ...STARTER } : {
     halls: Math.max(4, +hallsBox.value || 0),
     stores: readCount("numStores", 26),
     escalators: readCount("numEscalators", 8),
     tunnelPairs: readCount("numTunnelPairs", 3),
-    starter: !!starter,
+    starter: false,
   };
   let result;
   if (opts.starter) {
@@ -676,13 +708,7 @@ function run(starter) {
 }
 
 document.getElementById("generate").addEventListener("click", () => run());
-document.getElementById("starter").addEventListener("click", () => {
-  document.getElementById("numHalls").value = 6;
-  document.getElementById("numStores").value = 15;
-  document.getElementById("numEscalators").value = 0;
-  document.getElementById("numTunnelPairs").value = 0;
-  run(true);
-});
+document.getElementById("starter").addEventListener("click", () => run(true));
 document.getElementById("randomize").addEventListener("click", () => {
   document.getElementById("seed").value = "mall-" + Math.floor(Math.random() * 100000);
   run();
@@ -709,7 +735,7 @@ document.getElementById("save").addEventListener("click", () => {
   };
   img.src = url;
 });
-run();
+run(true);
 </script>
 </body>
 </html>
