@@ -164,6 +164,7 @@ function generate(seedStr, opts) {
   // try to place as mirrored left/right pairs so the map reads symmetric,
   // but a pair degrades to a single piece when the mirror spot is taken --
   // close to symmetric, not rigidly so.
+  const OPPOSITE = { top: "bottom", bottom: "top", left: "right", right: "left" };
   const mirrorSideName = s => s === "left" ? "right" : s === "right" ? "left" : s;
   const mirrorDirName = d => d === "left" ? "right" : d === "right" ? "left" : d;
   const mirrorX = p => GW - p.x - p.w;
@@ -283,6 +284,45 @@ function generate(seedStr, opts) {
     return spots.filter(s => fits(grid, s.x, s.y, s.w, s.h) && doorTouches(s));
   }
 
+  // hall-to-hall connection rules:
+  //  - never long side to long side
+  //  - short-to-long and short-to-short only
+  //  - at most one hall may connect along any hall's long side
+  const isHallLike = p => !!p && (p.type === "hall" || p.type === "escalator");
+  function sideCells(r, side) {
+    if (side === "top")    return Array.from({ length: r.w }, (_, i) => [r.x + i, r.y - 1]);
+    if (side === "bottom") return Array.from({ length: r.w }, (_, i) => [r.x + i, r.y + r.h]);
+    if (side === "left")   return Array.from({ length: r.h }, (_, i) => [r.x - 1, r.y + i]);
+    return Array.from({ length: r.h }, (_, i) => [r.x + r.w, r.y + i]);
+  }
+  const longSidesOf = r => r.w > r.h ? ["top", "bottom"] : ["left", "right"];
+  function hallPlacementOK(cand) {
+    const longH = longSidesOf(cand);
+    for (const side of ALL_OPEN) {
+      const touching = new Set();
+      for (const [cx, cy] of sideCells(cand, side)) {
+        if (cx < 0 || cy < 0 || cx >= GW || cy >= GH) continue;
+        if (isHallLike(grid[cy][cx])) touching.add(grid[cy][cx]);
+      }
+      if (!touching.size) continue;
+      const isLongH = longH.includes(side);
+      if (isLongH && touching.size > 1) return false;
+      for (const n of touching) {
+        const isLongN = longSidesOf(n).includes(OPPOSITE[side]);
+        if (isLongH && isLongN) return false;
+        if (isLongN) {
+          // the candidate would join n's long side: that side must be empty of halls
+          for (const [cx, cy] of sideCells(n, OPPOSITE[side])) {
+            if (cx < 0 || cy < 0 || cx >= GW || cy >= GH) continue;
+            const o = grid[cy][cx];
+            if (o && o !== n && isHallLike(o)) return false;
+          }
+        }
+      }
+    }
+    return true;
+  }
+
   // when the mall runs out of storefronts, grow a hallway spur (mirrored
   // when the mirror spot is free, so the skeleton stays near-symmetric)
   function addSpur() {
@@ -301,7 +341,13 @@ function generate(seedStr, opts) {
     shuffle(cands, rnd);
     for (const c of cands) {
       if (!fits(grid, c.x, c.y, c.w, c.h)) continue;
-      placePair({ type: "hall", x: c.x, y: c.y, w: c.w, h: c.h, openSides: ALL_OPEN });
+      if (!hallPlacementOK(c)) continue;
+      place(grid, pieces, { type: "hall", x: c.x, y: c.y, w: c.w, h: c.h, openSides: ALL_OPEN });
+      // mirror the spur when the mirrored spot is free and also legal
+      const m = { x: mirrorX(c), y: c.y, w: c.w, h: c.h };
+      if (m.x !== c.x && fits(grid, m.x, m.y, m.w, m.h) && hallPlacementOK(m)) {
+        place(grid, pieces, { type: "hall", x: m.x, y: m.y, w: m.w, h: m.h, openSides: ALL_OPEN });
+      }
       return true;
     }
     return false;
@@ -349,7 +395,6 @@ function generate(seedStr, opts) {
   if (spurs) notes.push("Grew " + spurs + " extra hallway spur(s) to fit more stores.");
 
   // --- 6. access tunnels: lettered pairs A/B/C, mirrored when possible ---
-  const OPPOSITE = { top: "bottom", bottom: "top", left: "right", right: "left" };
   function tunnelSpotsNow() {
     const spots = [];
     for (let y = 0; y < GH; y++)
