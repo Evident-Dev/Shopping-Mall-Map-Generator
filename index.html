@@ -123,24 +123,6 @@ function shuffle(arr, rnd) {
   return arr;
 }
 
-// ---------- flavor ----------
-const BIG_STORE_NAMES = [
-  "BOWLING ALLEY", "ARCADE", "CINEMA", "DEPT. STORE",
-  "FOOD COURT", "SUPERMARKET", "GYM", "TOY PALACE",
-];
-const STORE_NAMES = [
-  "MODELING AGENCY", "RECORD SHOP", "PET STORE", "SHOE STORE",
-  "COMIC SHOP", "PHOTO BOOTH", "SALON", "PIZZA PLACE",
-  "BOOKSTORE", "ELECTRONICS", "JEWELER", "CANDY SHOP",
-  "VIDEO RENTAL", "OPTICIAN", "FLORIST", "PRETZEL STAND",
-  "COFFEE BAR", "TAILOR", "BANK", "PHARMACY",
-];
-// loot icons: floppy (blue) and lipstick (pink), like the printed tiles
-const LOOT = [
-  { icon: "\u{1F4BE}", bg: "#37b6e0" }, // floppy
-  { icon: "\u{1F484}", bg: "#e040ab" }, // lipstick
-];
-
 // ---------- board model ----------
 const GW = 22, GH = 12, CELL = 40;
 
@@ -177,9 +159,6 @@ function generate(seedStr, opts) {
   const pieces = [];
   const notes = [];
 
-  const bigNames = shuffle(BIG_STORE_NAMES.slice(), rnd);
-  const storeNames = shuffle(STORE_NAMES.slice(), rnd);
-
   // --- 1. plazas: 4x4, left and right, no more than 3 hallways apart ---
   const hallsApart = 2 + Math.floor(rnd() * 2); // 2 or 3 hallway tiles between plazas
   const gap = hallsApart * 2;
@@ -215,9 +194,7 @@ function generate(seedStr, opts) {
         place(grid, pieces, {
           type: "bigstore", x: s.x, y: s.y, w: s.w, h: s.h,
           openSides: [s.side],
-          name: bigNames.pop(),
-          sub: "P" + playerNum + " START",
-          loot: 3 + Math.floor(rnd() * 2), // 3-4 loot icons
+          name: String(playerNum),
         });
         playerNum++;
         placed++;
@@ -282,8 +259,6 @@ function generate(seedStr, opts) {
       place(grid, pieces, {
         type: "store", x: s.x, y: s.y, w: s.w, h: s.h,
         openSides: [s.side],
-        name: storeNames.pop() || "STORE",
-        loot: 1 + Math.floor(rnd() * 2), // 1-2 loot icons
       });
       stores++;
     }
@@ -409,15 +384,13 @@ function render(result, seedStr) {
       }
     }
 
-    // name / label
+    // label: big store number, security text, tunnel letter
     if (p.name) {
-      const big = p.type === "bigstore";
-      const tiny = p.type === "tunnel";
-      const vertical = !tiny && p.h > p.w;
-      const fontSize = tiny ? 16 : big ? 11 : 8;
+      const vertical = p.h > p.w && p.name.length > 2;
+      const fontSize = p.type === "bigstore" ? 26 : p.type === "tunnel" ? 16 : 9;
       const cx = px + pw / 2, cy = py + ph / 2;
       const t = svgEl("text", {
-        x: cx, y: cy + (big ? -2 : fontSize / 3),
+        x: cx, y: cy + fontSize / 3,
         "text-anchor": "middle",
         "font-size": fontSize,
         "font-weight": 700,
@@ -427,28 +400,6 @@ function render(result, seedStr) {
       if (vertical) t.setAttribute("transform", `rotate(-90 ${cx} ${cy})`);
       t.textContent = p.name;
       svg.appendChild(t);
-      if (p.sub) {
-        const t2 = svgEl("text", {
-          x: cx, y: cy + 12, "text-anchor": "middle",
-          "font-size": 9, "font-weight": 700, fill: "#ffd76e",
-        });
-        t2.textContent = p.sub;
-        svg.appendChild(t2);
-      }
-    }
-
-    // loot icons
-    if (p.loot) {
-      for (let i = 0; i < p.loot; i++) {
-        const lt = LOOT[Math.floor(rnd() * LOOT.length)];
-        const r = 7;
-        const lx = px + pw - EDGE - 10 - (i % 2) * 17;
-        const ly = py + ph - EDGE - 10 - Math.floor(i / 2) * 17;
-        svg.appendChild(svgEl("circle", { cx: lx, cy: ly, r, fill: lt.bg, stroke: "#fff", "stroke-width": 1.5 }));
-        const it = svgEl("text", { x: lx, y: ly + 3.5, "text-anchor": "middle", "font-size": 9 });
-        it.textContent = lt.icon;
-        svg.appendChild(it);
-      }
     }
   }
   return svg;
