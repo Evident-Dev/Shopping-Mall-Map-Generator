@@ -238,6 +238,9 @@ function generate(seedStr, opts) {
   let esc = 0;
   // empty cells past a spur escalator's end, kept for a tunnel
   const reservedForTunnels = [];
+  // tunnels keep their distance from every other tunnel
+  const TUNNEL_SPACING = 6;
+  const tooClose = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < TUNNEL_SPACING;
   const overlapsReserved = r => reservedForTunnels.some(t =>
     t.x >= r.x && t.x < r.x + r.w && t.y >= r.y && t.y < r.y + r.h);
   const halls = () => pieces.filter(p => p.type === "hall" && p.w === 2);
@@ -264,6 +267,12 @@ function generate(seedStr, opts) {
   function mirrorPair(h) {
     return pieces.find(p => p !== h && p.type === "hall" && p.w === h.w && p.h === h.h && p.y === h.y && p.x === mirrorX(h));
   }
+  // corridor pairs mirror across the two corridor rows as well, so the
+  // pair makes a loop around the middle instead of a trap in it
+  function loopPair(h) {
+    const otherRow = h.y === corridorRows[0] ? corridorRows[1] : corridorRows[0];
+    return pieces.find(p => p !== h && p.type === "hall" && p.w === 2 && p.y === otherRow && p.x === mirrorX(h));
+  }
   function convertPair(h, m, dir) {
     if (touchesPiece(h, m)) return false;
     const fh = forcedDir(h), fm = forcedDir(m);
@@ -277,7 +286,7 @@ function generate(seedStr, opts) {
   for (const h of shuffle(halls(), rnd)) {
     if (esc + 2 > opts.escalators) break;
     if (h.type !== "hall") continue;
-    const m = mirrorPair(h);
+    const m = loopPair(h);
     if (m && convertPair(h, m, randomDir(h))) esc += 2;
   }
   for (const h of shuffle(halls(), rnd)) {
@@ -446,7 +455,13 @@ function generate(seedStr, opts) {
   // number of ends needing a tunnel, or -1 when an end can never lead anywhere
   function freeEnds(h) {
     const states = endsOf(h).map(side => endState(h, side));
-    return states.includes("blocked") ? -1 : states.filter(st => st === "free").length;
+    if (states.includes("blocked")) return -1;
+    for (const side of endsOf(h)) {
+      if (endState(h, side) !== "free") continue;
+      const [[cx, cy]] = sideCells(h, side);
+      if (reservedForTunnels.some(t => tooClose(t, { x: cx, y: cy }))) return -1;
+    }
+    return states.filter(st => st === "free").length;
   }
   function reserveEnds(h) {
     for (const side of endsOf(h)) {
@@ -518,11 +533,13 @@ function generate(seedStr, opts) {
   if (emptyHalls) notes.push(plural(emptyHalls, "hall") + " with no store.");
 
   // --- 6. access tunnels: lettered pairs A/B/C, mirrored when possible ---
+  const tunnels = () => pieces.filter(p => p.type === "tunnel");
   function tunnelSpotsNow() {
     const spots = [];
     for (let y = 0; y < GH; y++)
       for (let x = 0; x < GW; x++) {
         if (grid[y][x]) continue;
+        if (tunnels().some(t => tooClose(t, { x, y }))) continue;
         for (const [dx, dy, side] of [[1,0,"right"],[-1,0,"left"],[0,1,"bottom"],[0,-1,"top"]]) {
           const nx = x + dx, ny = y + dy;
           if (!cellIs(grid, nx, ny, WALKABLE)) continue;
@@ -546,12 +563,12 @@ function generate(seedStr, opts) {
     if (spots.length < 2) break;
     const label = "ABC"[tunnelPairs];
     const a = required.shift() || spots[0];
+    if (tunnels().some(t => tooClose(t, a))) break;
     placeTunnel(a, label);
     // partner: another waiting escalator end, else the mirrored spot, else
-    // any legal spot, but never right next to its twin
-    const farEnough = t => Math.abs(t.x - a.x) + Math.abs(t.y - a.y) > 4;
-    const rest = tunnelSpotsNow().filter(farEnough);
-    const waiting = required.find(farEnough);
+    // any legal spot
+    const rest = tunnelSpotsNow();
+    const waiting = required.find(t => !tunnels().some(u => tooClose(u, t)));
     const mirror = rest.find(t => t.x === GW - a.x - 1 && t.y === a.y);
     const b = waiting || mirror || shuffle(rest, rnd)[0];
     if (!b) {
@@ -576,7 +593,42 @@ function generate(seedStr, opts) {
     .reduce((n, e) => n + endsOf(e).filter(side => !leadsSomewhere(e, side)).length, 0);
   if (unusedEscalatorEnds) notes.push(plural(unusedEscalatorEnds, "escalator end") + " leading nowhere.");
 
-  return { pieces, notes, counts: { stores, security, escalators: esc, tunnelPairs, hallsApart, halls: hallCount(), emptyHalls, unusedEscalatorEnds } };
+  // every room and walkable piece must reach every other, walking
+  // escalators only in their arrow direction and tunnels twin to twin
+  const WALK = ["plaza", "hall", "escalator", "tunnel", "store", "bigstore", "security"];
+  const nodes = pieces.filter(p => WALK.includes(p.type));
+  const canLeave = (p, side) => p.type !== "escalator" || side === p.dir;
+  const canEnter = (p, side) => p.type !== "escalator" || side === OPPOSITE[p.dir];
+  const exits = new Map(nodes.map(p => [p, []]));
+  for (const p of nodes) {
+    for (const side of p.openSides || []) {
+      if (!canLeave(p, side)) continue;
+      for (const [cx, cy] of sideCells(p, side)) {
+        if (cx < 0 || cy < 0 || cx >= GW || cy >= GH) continue;
+        const n = grid[cy][cx];
+        if (!n || n === p || !exits.has(n)) continue;
+        if (!(n.openSides || []).includes(OPPOSITE[side]) || !canEnter(n, OPPOSITE[side])) continue;
+        exits.get(p).push(n);
+      }
+    }
+    if (p.type === "tunnel") {
+      const twin = nodes.find(t => t !== p && t.type === "tunnel" && t.name === p.name);
+      if (twin) exits.get(p).push(twin);
+    }
+  }
+  const entries = new Map(nodes.map(p => [p, []]));
+  for (const [p, outs] of exits) for (const n of outs) entries.get(n).push(p);
+  function reachable(start, links) {
+    const seen = new Set([start]);
+    const queue = [start];
+    while (queue.length) for (const n of links.get(queue.pop())) if (!seen.has(n)) { seen.add(n); queue.push(n); }
+    return seen;
+  }
+  const forward = reachable(nodes[0], exits), backward = reachable(nodes[0], entries);
+  const stranded = nodes.filter(p => !forward.has(p) || !backward.has(p)).length;
+  if (stranded) notes.push("Not every store can reach every other store.");
+
+  return { pieces, notes, counts: { stores, security, escalators: esc, tunnelPairs, hallsApart, halls: hallCount(), emptyHalls, unusedEscalatorEnds, stranded } };
 }
 
 // ---------- rendering: printed-tile look ----------
@@ -736,7 +788,8 @@ function run(starter) {
         const r = generate(k ? seed + "~" + k : seed, opts);
         result = r;
         const short = r.counts.stores < opts.stores || r.counts.escalators < opts.escalators
-          || r.counts.tunnelPairs < opts.tunnelPairs || r.counts.unusedEscalatorEnds > 0;
+          || r.counts.tunnelPairs < opts.tunnelPairs || r.counts.unusedEscalatorEnds > 0
+          || r.counts.stranded > 0;
         if (short) continue;
         if (!fitting || r.counts.emptyHalls < fitting.counts.emptyHalls) fitting = r;
         if (r.counts.emptyHalls === 0) break;
