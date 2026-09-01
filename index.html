@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mall Map Generator</title>
+<style>
+  :root {
+    --bg: #f4f1ea;
+    --ink: #2b2b2b;
+    --wall: #d63c3c;   /* red edge = wall */
+    --open: #3d55c9;   /* blue edge = open / walkable */
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+  }
+  header { padding: 14px 20px 6px; }
+  header h1 { margin: 0 0 2px; font-size: 22px; }
+  header p { margin: 0; font-size: 13px; color: #666; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+    padding: 10px 20px;
+  }
+  .controls label {
+    display: flex; flex-direction: column;
+    font-size: 12px; font-weight: 600; gap: 3px;
+  }
+  .controls input {
+    padding: 6px 8px; font-size: 14px;
+    border: 1px solid #bbb; border-radius: 6px; width: 100px; background: #fff;
+  }
+  .controls button {
+    padding: 8px 16px; font-size: 14px; font-weight: 700;
+    border: none; border-radius: 6px; cursor: pointer;
+    background: #2f6f4f; color: #fff;
+  }
+  .controls button.secondary { background: #666; }
+  .controls button:hover { filter: brightness(1.1); }
+  #board-wrap { padding: 4px 20px 12px; overflow-x: auto; }
+  svg { background: #1c1a22; border: 1px solid #ccc; border-radius: 8px; display: block; }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 14px;
+    padding: 0 20px 10px; font-size: 13px;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 16px; height: 16px; border-radius: 3px; display: inline-block; }
+  #summary { padding: 0 20px 24px; font-size: 13px; color: #555; max-width: 900px; }
+  @media print {
+    .controls, .legend, #summary, header p { display: none; }
+    body { background: #fff; }
+    svg { border: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mall Map Generator</h1>
+  <p>Board setup helper. Red edges are walls. Blue edges are open. Escalators are one-way. Tunnels link in lettered pairs.</p>
+</header>
+
+<div class="controls">
+  <label>Seed
+    <input type="text" id="seed" value="mall-1">
+  </label>
+  <label>Stores
+    <input type="number" id="numStores" value="8" min="0" max="20">
+  </label>
+  <label>Escalators
+    <input type="number" id="numEscalators" value="1" min="0" max="4">
+  </label>
+  <label>Tunnel pairs (max 3)
+    <input type="number" id="numTunnelPairs" value="2" min="0" max="3">
+  </label>
+  <button id="generate">Generate</button>
+  <button id="randomize" class="secondary">Random Seed</button>
+  <button id="print" class="secondary">Print</button>
+</div>
+
+<div class="legend">
+  <span><i style="background:#8f5fae"></i>Plaza 4&times;4 (open all sides)</span>
+  <span><i style="background:#2e2b3f"></i>Big Store 2&times;4 (start zone)</span>
+  <span><i style="background:#3a3650"></i>Store 2&times;1</span>
+  <span><i style="background:#7a5fae"></i>Hallway 2&times;1 (open all sides)</span>
+  <span><i style="background:#4f2e2e"></i>Security Room 2&times;1</span>
+  <span><i style="background:#26232e;border:1px solid #e8a33d"></i>Escalator 2&times;1 (one-way)</span>
+  <span><i style="background:#33303e"></i>Tunnel 1&times;1 (pairs A/B/C)</span>
+  <span><i style="background:var(--open)"></i>Open edge</span>
+  <span><i style="background:var(--wall)"></i>Wall edge</span>
+</div>
+
+<div id="board-wrap"></div>
+<div id="summary"></div>
+
+<script>
+"use strict";
+
+// ---------- seeded RNG ----------
+function hashSeed(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function shuffle(arr, rnd) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// ---------- board model ----------
+const GW = 22, GH = 12, CELL = 40;
+
+function makeGrid() {
+  const g = [];
+  for (let y = 0; y < GH; y++) g.push(new Array(GW).fill(null));
+  return g;
+}
+function fits(grid, x, y, w, h) {
+  if (x < 0 || y < 0 || x + w > GW || y + h > GH) return false;
+  for (let yy = y; yy < y + h; yy++)
+    for (let xx = x; xx < x + w; xx++)
+      if (grid[yy][xx]) return false;
+  return true;
+}
+function place(grid, pieces, piece) {
+  for (let yy = piece.y; yy < piece.y + piece.h; yy++)
+    for (let xx = piece.x; xx < piece.x + piece.w; xx++)
+      grid[yy][xx] = piece;
+  pieces.push(piece);
+  return piece;
+}
+function cellIs(grid, x, y, types) {
+  if (x < 0 || y < 0 || x >= GW || y >= GH) return false;
+  const p = grid[y][x];
+  return !!p && types.includes(p.type);
+}
+
+const WALKABLE = ["plaza", "hall", "escalator", "tunnel"];
+
+function generate(seedStr, opts) {
+  const rnd = mulberry32(hashSeed(seedStr));
+  const grid = makeGrid();
+  const pieces = [];
+  const notes = [];
+
+  // --- 1. plazas: 4x4, left and right, no more than 3 hallways apart ---
+  const hallsApart = 2 + Math.floor(rnd() * 2); // 2 or 3 hallway tiles between plazas
+  const gap = hallsApart * 2;
+  const plazaY = 4; // rows 4-7
+  const startX = Math.floor((GW - (8 + gap)) / 2);
+  const plazaL = place(grid, pieces, { type: "plaza", x: startX, y: plazaY, w: 4, h: 4, openSides: ["top","bottom","left","right"] });
+  const plazaR = place(grid, pieces, { type: "plaza", x: startX + 4 + gap, y: plazaY, w: 4, h: 4, openSides: ["top","bottom","left","right"] });
+
+  // --- 2. two corridors connect the plazas: top row and bottom row ---
+  const corridorRows = [plazaY, plazaY + 3];
+  for (const row of corridorRows) {
+    for (let i = 0; i < hallsApart; i++) {
+      place(grid, pieces, {
+        type: "hall", x: plazaL.x + 4 + i * 2, y: row, w: 2, h: 1,
+        openSides: ["top","bottom","left","right"],
+      });
+    }
+  }
+
+  // --- 3. big stores: 2 per plaza (above, below, or outer side), long side to plaza ---
+  let playerNum = 1;
+  for (const plaza of [plazaL, plazaR]) {
+    const isLeft = plaza === plazaL;
+    const spots = shuffle([
+      { x: plaza.x, y: plaza.y - 2, w: 4, h: 2, side: "bottom" },
+      { x: plaza.x, y: plaza.y + 4, w: 4, h: 2, side: "top" },
+      { x: isLeft ? plaza.x - 2 : plaza.x + 4, y: plaza.y, w: 2, h: 4, side: isLeft ? "right" : "left" },
+    ], rnd);
+    let placed = 0;
+    for (const s of spots) {
+      if (placed >= 2) break;
+      if (fits(grid, s.x, s.y, s.w, s.h)) {
+        place(grid, pieces, {
+          type: "bigstore", x: s.x, y: s.y, w: s.w, h: s.h,
+          openSides: [s.side],
+          name: String(playerNum),
+        });
+        playerNum++;
+        placed++;
+      }
+    }
+    if (placed < 2) notes.push("Could not fit 2 big stores on a plaza.");
+  }
+
+  // --- 4. escalators: convert hallway dominoes to one-way escalators ---
+  const halls = shuffle(pieces.filter(p => p.type === "hall"), rnd);
+  let esc = 0;
+  for (const h of halls) {
+    if (esc >= opts.escalators) break;
+    h.type = "escalator";
+    if (h.w === 2) { h.dir = rnd() < 0.5 ? "right" : "left"; h.openSides = ["left", "right"]; }
+    else { h.dir = rnd() < 0.5 ? "down" : "up"; h.openSides = ["top", "bottom"]; }
+    esc++;
+  }
+
+  // --- 5. stores: 2x1, long side (blue edge) flush against hallway or plaza only ---
+  const storeSpots = [];
+  // above/below each corridor hallway (outside rows and the courtyard between corridors)
+  for (const row of corridorRows) {
+    for (let i = 0; i < hallsApart; i++) {
+      const x = plazaL.x + 4 + i * 2;
+      storeSpots.push({ x, y: row - 1, w: 2, h: 1, side: "bottom" });
+      storeSpots.push({ x, y: row + 1, w: 2, h: 1, side: "top" });
+    }
+  }
+  // around plaza edges
+  for (const plaza of [plazaL, plazaR]) {
+    for (let x = plaza.x; x <= plaza.x + 2; x++) {
+      storeSpots.push({ x, y: plaza.y - 1, w: 2, h: 1, side: "bottom" });
+      storeSpots.push({ x, y: plaza.y + 4, w: 2, h: 1, side: "top" });
+    }
+    for (let y = plaza.y; y <= plaza.y + 2; y++) {
+      storeSpots.push({ x: plaza.x - 1, y, w: 1, h: 2, side: "right" });
+      storeSpots.push({ x: plaza.x + 4, y, w: 1, h: 2, side: "left" });
+    }
+  }
+  shuffle(storeSpots, rnd);
+
+  function doorTouches(s) {
+    // every cell of the blue edge must touch hallway or plaza (not an escalator side wall)
+    const t = ["hall", "plaza"];
+    if (s.side === "bottom") return cellIs(grid, s.x, s.y + 1, t) && cellIs(grid, s.x + 1, s.y + 1, t);
+    if (s.side === "top")    return cellIs(grid, s.x, s.y - 1, t) && cellIs(grid, s.x + 1, s.y - 1, t);
+    if (s.side === "right")  return cellIs(grid, s.x + 1, s.y, t) && cellIs(grid, s.x + 1, s.y + 1, t);
+    if (s.side === "left")   return cellIs(grid, s.x - 1, s.y, t) && cellIs(grid, s.x - 1, s.y + 1, t);
+    return false;
+  }
+
+  let stores = 0, security = 0;
+  for (const s of storeSpots) {
+    if (stores >= opts.stores && security >= 1) break;
+    if (!fits(grid, s.x, s.y, s.w, s.h)) continue;
+    if (!doorTouches(s)) continue;
+    if (security < 1) {
+      place(grid, pieces, { type: "security", x: s.x, y: s.y, w: s.w, h: s.h, openSides: [s.side], name: "SECURITY" });
+      security++;
+    } else {
+      place(grid, pieces, {
+        type: "store", x: s.x, y: s.y, w: s.w, h: s.h,
+        openSides: [s.side],
+      });
+      stores++;
+    }
+  }
+  if (stores < opts.stores) notes.push("Placed " + stores + " of " + opts.stores + " stores (ran out of legal spots).");
+
+  // --- 6. access tunnels: lettered pairs A/B/C, one open edge each ---
+  const OPPOSITE = { top: "bottom", bottom: "top", left: "right", right: "left" };
+  const tunnelSpots = [];
+  for (let y = 0; y < GH; y++)
+    for (let x = 0; x < GW; x++) {
+      if (grid[y][x]) continue;
+      for (const [dx, dy, side] of [[1,0,"right"],[-1,0,"left"],[0,1,"bottom"],[0,-1,"top"]]) {
+        const nx = x + dx, ny = y + dy;
+        if (!cellIs(grid, nx, ny, WALKABLE)) continue;
+        // the neighbor's facing edge must be open (blue), not a wall
+        const n = grid[ny][nx];
+        if (!(n.openSides || []).includes(OPPOSITE[side])) continue;
+        tunnelSpots.push({ x, y, side });
+        break;
+      }
+    }
+  shuffle(tunnelSpots, rnd);
+  const pairsWanted = Math.min(opts.tunnelPairs, 3);
+  let tunnels = 0;
+  for (const t of tunnelSpots) {
+    if (tunnels >= pairsWanted * 2) break;
+    if (!fits(grid, t.x, t.y, 1, 1)) continue;
+    const label = "ABC"[Math.floor(tunnels / 2)];
+    place(grid, pieces, { type: "tunnel", x: t.x, y: t.y, w: 1, h: 1, openSides: [t.side], name: label });
+    tunnels++;
+  }
+  if (tunnels % 2 !== 0) {
+    // never leave half a pair on the board
+    const orphan = pieces.pop();
+    for (let yy = orphan.y; yy < orphan.y + orphan.h; yy++)
+      for (let xx = orphan.x; xx < orphan.x + orphan.w; xx++)
+        grid[yy][xx] = null;
+    tunnels--;
+  }
+
+  return { pieces, notes, counts: { stores, security, escalators: esc, tunnelPairs: tunnels / 2, hallsApart } };
+}
+
+// ---------- rendering: printed-tile look ----------
+const FLOORS = {
+  plaza: "#8f5fae",
+  hall: "#7a5fae",
+  escalator: "#26232e",
+  store: "#3a3650",
+  bigstore: "#2e2b3f",
+  security: "#4f2e2e",
+  tunnel: "#33303e",
+};
+const EDGE = 5; // border strip thickness in px
+
+function svgEl(name, attrs) {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", name);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+
+function drawMosaic(svg, px, py, pw, ph, base, rnd) {
+  // pixel-mosaic floor like the printed tiles
+  const step = 10;
+  for (let y = py; y < py + ph; y += step)
+    for (let x = px; x < px + pw; x += step) {
+      const v = (rnd() - 0.5) * 0.25;
+      svg.appendChild(svgEl("rect", {
+        x, y, width: Math.min(step, px + pw - x), height: Math.min(step, py + ph - y),
+        fill: base, opacity: 0.85 + v,
+      }));
+    }
+}
+
+function render(result, seedStr) {
+  const rnd = mulberry32(hashSeed(seedStr + ":art"));
+  const svg = svgEl("svg", {
+    width: GW * CELL + 2, height: GH * CELL + 2,
+    viewBox: "-1 -1 " + (GW * CELL + 2) + " " + (GH * CELL + 2),
+  });
+
+  for (const p of result.pieces) {
+    const px = p.x * CELL, py = p.y * CELL, pw = p.w * CELL, ph = p.h * CELL;
+    const open = p.openSides || [];
+
+    // edge strips: blue = open, red = wall
+    svg.appendChild(svgEl("rect", { x: px, y: py, width: pw, height: ph, fill: open.includes("top") ? "var(--open)" : "var(--wall)" }));
+    // draw each side strip over a base rect
+    const sideColor = s => open.includes(s) ? "#3d55c9" : "#d63c3c";
+    svg.appendChild(svgEl("rect", { x: px, y: py, width: pw, height: EDGE, fill: sideColor("top") }));
+    svg.appendChild(svgEl("rect", { x: px, y: py + ph - EDGE, width: pw, height: EDGE, fill: sideColor("bottom") }));
+    svg.appendChild(svgEl("rect", { x: px, y: py, width: EDGE, height: ph, fill: sideColor("left") }));
+    svg.appendChild(svgEl("rect", { x: px + pw - EDGE, y: py, width: EDGE, height: ph, fill: sideColor("right") }));
+
+    // floor
+    drawMosaic(svg, px + EDGE, py + EDGE, pw - EDGE * 2, ph - EDGE * 2, FLOORS[p.type], rnd);
+
+    // plaza fountain
+    if (p.type === "plaza") {
+      const cx = px + pw / 2, cy = py + ph / 2;
+      svg.appendChild(svgEl("circle", { cx, cy, r: 26, fill: "#b08d57", stroke: "#7a5f38", "stroke-width": 3 }));
+      svg.appendChild(svgEl("circle", { cx, cy, r: 16, fill: "#3f6b3a" }));
+      svg.appendChild(svgEl("circle", { cx, cy, r: 7, fill: "#b08d57" }));
+    }
+
+    // escalator: orange rails + one-way arrows
+    if (p.type === "escalator") {
+      const horiz = p.w === 2;
+      if (horiz) {
+        svg.appendChild(svgEl("rect", { x: px + EDGE + 2, y: py + 9, width: pw - EDGE * 2 - 4, height: 3, fill: "#e8a33d" }));
+        svg.appendChild(svgEl("rect", { x: px + EDGE + 2, y: py + ph - 12, width: pw - EDGE * 2 - 4, height: 3, fill: "#e8a33d" }));
+      } else {
+        svg.appendChild(svgEl("rect", { x: px + 9, y: py + EDGE + 2, width: 3, height: ph - EDGE * 2 - 4, fill: "#e8a33d" }));
+        svg.appendChild(svgEl("rect", { x: px + pw - 12, y: py + EDGE + 2, width: 3, height: ph - EDGE * 2 - 4, fill: "#e8a33d" }));
+      }
+      for (const f of [0.3, 0.7]) {
+        const cx = horiz ? px + pw * f : px + pw / 2;
+        const cy = horiz ? py + ph / 2 : py + ph * f;
+        const s = 8;
+        let d;
+        if (p.dir === "right") d = `M ${cx - s} ${cy - s} L ${cx + s} ${cy} L ${cx - s} ${cy + s} Z`;
+        if (p.dir === "left")  d = `M ${cx + s} ${cy - s} L ${cx - s} ${cy} L ${cx + s} ${cy + s} Z`;
+        if (p.dir === "down")  d = `M ${cx - s} ${cy - s} L ${cx} ${cy + s} L ${cx + s} ${cy - s} Z`;
+        if (p.dir === "up")    d = `M ${cx - s} ${cy + s} L ${cx} ${cy - s} L ${cx + s} ${cy + s} Z`;
+        svg.appendChild(svgEl("path", { d, fill: "#eee", stroke: "#999", "stroke-width": 1 }));
+      }
+    }
+
+    // label: big store number, security text, tunnel letter
+    if (p.name) {
+      const vertical = p.h > p.w && p.name.length > 2;
+      const fontSize = p.type === "bigstore" ? 26 : p.type === "tunnel" ? 16 : 9;
+      const cx = px + pw / 2, cy = py + ph / 2;
+      const t = svgEl("text", {
+        x: cx, y: cy + fontSize / 3,
+        "text-anchor": "middle",
+        "font-size": fontSize,
+        "font-weight": 700,
+        fill: "#f0ede4",
+        "font-family": "system-ui, sans-serif",
+      });
+      if (vertical) t.setAttribute("transform", `rotate(-90 ${cx} ${cy})`);
+      t.textContent = p.name;
+      svg.appendChild(t);
+    }
+  }
+  return svg;
+}
+
+// ---------- wiring ----------
+function run() {
+  const seed = document.getElementById("seed").value || "mall";
+  const opts = {
+    stores: +document.getElementById("numStores").value || 0,
+    escalators: +document.getElementById("numEscalators").value || 0,
+    tunnelPairs: +document.getElementById("numTunnelPairs").value || 0,
+  };
+  const result = generate(seed, opts);
+  const wrap = document.getElementById("board-wrap");
+  wrap.innerHTML = "";
+  wrap.appendChild(render(result, seed));
+  const c = result.counts;
+  let html = `<b>Seed:</b> ${seed} &nbsp; <b>Placed:</b> 2 plazas (${c.hallsApart} hallways apart, linked top and bottom), 4 big stores, ${c.stores} stores, ${c.security} security room, ${c.escalators} escalator(s), ${c.tunnelPairs} tunnel pair(s).`;
+  html += `<br>Blue edge = open. Red edge = wall. Matching tunnel letters connect to each other. Escalator arrows show the one-way direction.`;
+  if (result.notes.length) html += "<br><b>Notes:</b> " + result.notes.join(" ");
+  document.getElementById("summary").innerHTML = html;
+}
+
+document.getElementById("generate").addEventListener("click", run);
+document.getElementById("randomize").addEventListener("click", () => {
+  document.getElementById("seed").value = "mall-" + Math.floor(Math.random() * 100000);
+  run();
+});
+document.getElementById("print").addEventListener("click", () => window.print());
+run();
+</script>
+</body>
+</html>
