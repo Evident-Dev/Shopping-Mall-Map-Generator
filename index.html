@@ -67,7 +67,7 @@
     <input type="text" id="seed" value="mall-1">
   </label>
   <label>Stores
-    <input type="number" id="numStores" value="8" min="0" max="20">
+    <input type="number" id="numStores" value="8" min="0" max="30">
   </label>
   <label>Escalators
     <input type="number" id="numEscalators" value="1" min="0" max="4">
@@ -152,6 +152,7 @@ function cellIs(grid, x, y, types) {
 }
 
 const WALKABLE = ["plaza", "hall", "escalator", "tunnel"];
+const ALL_OPEN = ["top", "bottom", "left", "right"];
 
 function generate(seedStr, opts) {
   const rnd = mulberry32(hashSeed(seedStr));
@@ -159,26 +160,45 @@ function generate(seedStr, opts) {
   const pieces = [];
   const notes = [];
 
-  // --- 1. plazas: 4x4, left and right, no more than 3 hallways apart ---
+  // The mall is laid out around a vertical center line. Structural pieces
+  // try to place as mirrored left/right pairs so the map reads symmetric,
+  // but a pair degrades to a single piece when the mirror spot is taken --
+  // close to symmetric, not rigidly so.
+  const mirrorSideName = s => s === "left" ? "right" : s === "right" ? "left" : s;
+  const mirrorDirName = d => d === "left" ? "right" : d === "right" ? "left" : d;
+  const mirrorX = p => GW - p.x - p.w;
+  function placePair(piece) {
+    const out = [place(grid, pieces, piece)];
+    const mx = mirrorX(piece);
+    if (mx !== piece.x && fits(grid, mx, piece.y, piece.w, piece.h)) {
+      out.push(place(grid, pieces, {
+        ...piece,
+        x: mx,
+        openSides: (piece.openSides || []).map(mirrorSideName),
+        dir: mirrorDirName(piece.dir),
+      }));
+    }
+    return out;
+  }
+
+  // --- 1. plazas: 4x4, mirrored left/right, no more than 3 hallways apart ---
   const hallsApart = 2 + Math.floor(rnd() * 2); // 2 or 3 hallway tiles between plazas
   const gap = hallsApart * 2;
   const plazaY = 5; // rows 5-8
-  const startX = Math.floor((GW - (8 + gap)) / 2);
-  const plazaL = place(grid, pieces, { type: "plaza", x: startX, y: plazaY, w: 4, h: 4, openSides: ["top","bottom","left","right"] });
-  const plazaR = place(grid, pieces, { type: "plaza", x: startX + 4 + gap, y: plazaY, w: 4, h: 4, openSides: ["top","bottom","left","right"] });
+  const startX = (GW - (8 + gap)) / 2;
+  const [plazaL, plazaR] = placePair({ type: "plaza", x: startX, y: plazaY, w: 4, h: 4, openSides: ALL_OPEN });
 
   // --- 2. two corridors connect the plazas: top row and bottom row ---
   const corridorRows = [plazaY, plazaY + 3];
   for (const row of corridorRows) {
     for (let i = 0; i < hallsApart; i++) {
-      place(grid, pieces, {
-        type: "hall", x: plazaL.x + 4 + i * 2, y: row, w: 2, h: 1,
-        openSides: ["top","bottom","left","right"],
-      });
+      const x = plazaL.x + 4 + i * 2;
+      if (grid[row][x]) continue; // already filled by an earlier tile's mirror
+      placePair({ type: "hall", x, y: row, w: 2, h: 1, openSides: ALL_OPEN });
     }
   }
 
-  // --- 3. big stores: 2 per plaza (above, below, or outer side), long side to plaza ---
+  // --- 3. big stores: 2 per plaza, independent per side (top/bottom/outer) ---
   let playerNum = 1;
   for (const plaza of [plazaL, plazaR]) {
     const isLeft = plaza === plazaL;
@@ -203,18 +223,31 @@ function generate(seedStr, opts) {
     if (placed < 2) notes.push("Could not fit 2 big stores on a plaza.");
   }
 
-  // --- 4. escalators: convert hallway dominoes to one-way escalators ---
-  const halls = shuffle(pieces.filter(p => p.type === "hall"), rnd);
+  // --- 4. escalators: prefer converting mirrored hallway pairs ---
   let esc = 0;
-  for (const h of halls) {
-    if (esc >= opts.escalators) break;
+  const halls = () => pieces.filter(p => p.type === "hall" && p.w === 2);
+  function toEscalator(h, dir) {
     h.type = "escalator";
-    if (h.w === 2) { h.dir = rnd() < 0.5 ? "right" : "left"; h.openSides = ["left", "right"]; }
-    else { h.dir = rnd() < 0.5 ? "down" : "up"; h.openSides = ["top", "bottom"]; }
+    h.dir = dir;
+    h.openSides = ["left", "right"];
+  }
+  for (const h of shuffle(halls(), rnd)) {
+    if (esc + 2 > opts.escalators) break;
+    if (h.type !== "hall") continue;
+    const m = pieces.find(p => p !== h && p.type === "hall" && p.w === 2 && p.y === h.y && p.x === mirrorX(h));
+    if (!m) continue;
+    const dir = rnd() < 0.5 ? "right" : "left";
+    toEscalator(h, dir);
+    toEscalator(m, mirrorDirName(dir));
+    esc += 2;
+  }
+  for (const h of shuffle(halls(), rnd)) {
+    if (esc >= opts.escalators) break;
+    toEscalator(h, rnd() < 0.5 ? "right" : "left");
     esc++;
   }
 
-  // --- 5. stores: 2x1, long side (blue edge) flush against hallway or plaza only ---
+  // --- 5. security + stores: 2x1, blue long side flush to hallway or plaza ---
   function doorTouches(s) {
     // every cell of the blue edge must touch hallway or plaza (not an escalator side wall)
     const t = ["hall", "plaza"];
@@ -250,8 +283,8 @@ function generate(seedStr, opts) {
     return spots.filter(s => fits(grid, s.x, s.y, s.w, s.h) && doorTouches(s));
   }
 
-  // when the core runs out of storefronts, grow the mall with a hallway spur
-  // (halls and plazas are open on all sides, so any flush attachment connects)
+  // when the mall runs out of storefronts, grow a hallway spur (mirrored
+  // when the mirror spot is free, so the skeleton stays near-symmetric)
   function addSpur() {
     const cands = [];
     for (const pc of pieces) {
@@ -268,13 +301,21 @@ function generate(seedStr, opts) {
     shuffle(cands, rnd);
     for (const c of cands) {
       if (!fits(grid, c.x, c.y, c.w, c.h)) continue;
-      place(grid, pieces, { type: "hall", x: c.x, y: c.y, w: c.w, h: c.h, openSides: ["top","bottom","left","right"] });
+      placePair({ type: "hall", x: c.x, y: c.y, w: c.w, h: c.h, openSides: ALL_OPEN });
       return true;
     }
     return false;
   }
 
-  let stores = 0, security = 0, spurs = 0, guard = 0;
+  // pre-grow the skeleton before any store lands: once stores are placed,
+  // their red walls can seal off every attach point and strand the growth
+  let spurs = 0, growGuard = 0;
+  while (legalStoreSpots().length < opts.stores + 4 && growGuard++ < 80) {
+    if (!addSpur()) break;
+    spurs++;
+  }
+
+  let stores = 0, security = 0, guard = 0;
   while ((stores < opts.stores || security < 1) && guard++ < 300) {
     const spots = shuffle(legalStoreSpots(), rnd);
     if (!spots.length) {
@@ -286,6 +327,19 @@ function generate(seedStr, opts) {
     if (security < 1) {
       place(grid, pieces, { type: "security", x: s.x, y: s.y, w: s.w, h: s.h, openSides: [s.side], name: "SECURITY" });
       security++;
+    } else if (stores + 1 < opts.stores) {
+      // room for two: mirror the store when the mirrored spot is also legal
+      const placed = placePair({ type: "store", x: s.x, y: s.y, w: s.w, h: s.h, openSides: [s.side] });
+      const twin = placed[1];
+      if (twin && !doorTouches({ x: twin.x, y: twin.y, w: twin.w, h: twin.h, side: twin.openSides[0] })) {
+        // mirror landed against something that is not a storefront; undo it
+        for (let yy = twin.y; yy < twin.y + twin.h; yy++)
+          for (let xx = twin.x; xx < twin.x + twin.w; xx++)
+            grid[yy][xx] = null;
+        pieces.splice(pieces.indexOf(twin), 1);
+        placed.pop();
+      }
+      stores += placed.length;
     } else {
       place(grid, pieces, { type: "store", x: s.x, y: s.y, w: s.w, h: s.h, openSides: [s.side] });
       stores++;
@@ -294,42 +348,50 @@ function generate(seedStr, opts) {
   if (stores < opts.stores) notes.push("Placed " + stores + " of " + opts.stores + " stores (board is full).");
   if (spurs) notes.push("Grew " + spurs + " extra hallway spur(s) to fit more stores.");
 
-  // --- 6. access tunnels: lettered pairs A/B/C, one open edge each ---
+  // --- 6. access tunnels: lettered pairs A/B/C, mirrored when possible ---
   const OPPOSITE = { top: "bottom", bottom: "top", left: "right", right: "left" };
-  const tunnelSpots = [];
-  for (let y = 0; y < GH; y++)
-    for (let x = 0; x < GW; x++) {
-      if (grid[y][x]) continue;
-      for (const [dx, dy, side] of [[1,0,"right"],[-1,0,"left"],[0,1,"bottom"],[0,-1,"top"]]) {
-        const nx = x + dx, ny = y + dy;
-        if (!cellIs(grid, nx, ny, WALKABLE)) continue;
-        // the neighbor's facing edge must be open (blue), not a wall
-        const n = grid[ny][nx];
-        if (!(n.openSides || []).includes(OPPOSITE[side])) continue;
-        tunnelSpots.push({ x, y, side });
-        break;
+  function tunnelSpotsNow() {
+    const spots = [];
+    for (let y = 0; y < GH; y++)
+      for (let x = 0; x < GW; x++) {
+        if (grid[y][x]) continue;
+        for (const [dx, dy, side] of [[1,0,"right"],[-1,0,"left"],[0,1,"bottom"],[0,-1,"top"]]) {
+          const nx = x + dx, ny = y + dy;
+          if (!cellIs(grid, nx, ny, WALKABLE)) continue;
+          // the neighbor's facing edge must be open (blue), not a wall
+          const n = grid[ny][nx];
+          if (!(n.openSides || []).includes(OPPOSITE[side])) continue;
+          spots.push({ x, y, side });
+          break;
+        }
       }
-    }
-  shuffle(tunnelSpots, rnd);
-  const pairsWanted = Math.min(opts.tunnelPairs, 3);
-  let tunnels = 0;
-  for (const t of tunnelSpots) {
-    if (tunnels >= pairsWanted * 2) break;
-    if (!fits(grid, t.x, t.y, 1, 1)) continue;
-    const label = "ABC"[Math.floor(tunnels / 2)];
-    place(grid, pieces, { type: "tunnel", x: t.x, y: t.y, w: 1, h: 1, openSides: [t.side], name: label });
-    tunnels++;
+    return spots;
   }
-  if (tunnels % 2 !== 0) {
-    // never leave half a pair on the board
-    const orphan = pieces.pop();
-    for (let yy = orphan.y; yy < orphan.y + orphan.h; yy++)
-      for (let xx = orphan.x; xx < orphan.x + orphan.w; xx++)
-        grid[yy][xx] = null;
-    tunnels--;
+  const pairsWanted = Math.min(opts.tunnelPairs, 3);
+  let tunnelPairs = 0;
+  while (tunnelPairs < pairsWanted) {
+    const spots = shuffle(tunnelSpotsNow(), rnd);
+    if (spots.length < 2) break;
+    const label = "ABC"[tunnelPairs];
+    const a = spots[0];
+    place(grid, pieces, { type: "tunnel", x: a.x, y: a.y, w: 1, h: 1, openSides: [a.side], name: label });
+    // partner: prefer the mirrored spot, else any legal spot, but never
+    // right next to its twin (a tunnel pair side by side is pointless)
+    const farEnough = t => Math.abs(t.x - a.x) + Math.abs(t.y - a.y) > 4;
+    const rest = tunnelSpotsNow().filter(farEnough);
+    const mirror = rest.find(t => t.x === GW - a.x - 1 && t.y === a.y);
+    const b = mirror || shuffle(rest, rnd)[0];
+    if (!b) {
+      // no home for the partner; take the first tunnel back off the board
+      const orphan = pieces.pop();
+      grid[orphan.y][orphan.x] = null;
+      break;
+    }
+    place(grid, pieces, { type: "tunnel", x: b.x, y: b.y, w: 1, h: 1, openSides: [b.side], name: label });
+    tunnelPairs++;
   }
 
-  return { pieces, notes, counts: { stores, security, escalators: esc, tunnelPairs: tunnels / 2, hallsApart } };
+  return { pieces, notes, counts: { stores, security, escalators: esc, tunnelPairs, hallsApart } };
 }
 
 // ---------- rendering: printed-tile look ----------
@@ -375,8 +437,6 @@ function render(result, seedStr) {
     const open = p.openSides || [];
 
     // edge strips: blue = open, red = wall
-    svg.appendChild(svgEl("rect", { x: px, y: py, width: pw, height: ph, fill: open.includes("top") ? "var(--open)" : "var(--wall)" }));
-    // draw each side strip over a base rect
     const sideColor = s => open.includes(s) ? "#3d55c9" : "#d63c3c";
     svg.appendChild(svgEl("rect", { x: px, y: py, width: pw, height: EDGE, fill: sideColor("top") }));
     svg.appendChild(svgEl("rect", { x: px, y: py + ph - EDGE, width: pw, height: EDGE, fill: sideColor("bottom") }));
