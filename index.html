@@ -66,6 +66,12 @@
   <label>Seed
     <input type="text" id="seed" value="mall-1">
   </label>
+  <label>Halls
+    <input type="number" id="numHalls" value="6" min="4" max="40">
+  </label>
+  <label style="flex-direction:row;align-items:center;gap:6px;padding-bottom:8px">
+    <input type="checkbox" id="hallOverride" style="width:auto"> override halls
+  </label>
   <label>Stores
     <input type="number" id="numStores" value="8" min="0" max="30">
   </label>
@@ -74,6 +80,9 @@
   </label>
   <label>Tunnel pairs (max 3)
     <input type="number" id="numTunnelPairs" value="2" min="0" max="3">
+  </label>
+  <label style="flex-direction:row;align-items:center;gap:6px;padding-bottom:8px">
+    <input type="checkbox" id="starterMode" style="width:auto"> Starter mall
   </label>
   <button id="generate">Generate</button>
   <button id="randomize" class="secondary">Random Seed</button>
@@ -183,7 +192,10 @@ function generate(seedStr, opts) {
   }
 
   // --- 1. plazas: 4x4, mirrored left/right, no more than 3 hallways apart ---
-  const hallsApart = 2 + Math.floor(rnd() * 2); // 2 or 3 hallway tiles between plazas
+  // starter mall: fixed first-game layout (6 halls, big stores top/bottom only)
+  const hallsApart = opts.starter ? 3
+    : opts.hallOverride ? (opts.hallOverride >= 6 ? 3 : 2)
+    : 2 + Math.floor(rnd() * 2);
   const gap = hallsApart * 2;
   const plazaY = 5; // rows 5-8
   const startX = (GW - (8 + gap)) / 2;
@@ -203,11 +215,14 @@ function generate(seedStr, opts) {
   let playerNum = 1;
   for (const plaza of [plazaL, plazaR]) {
     const isLeft = plaza === plazaL;
-    const spots = shuffle([
+    const spotChoices = [
       { x: plaza.x, y: plaza.y - 2, w: 4, h: 2, side: "bottom" },
       { x: plaza.x, y: plaza.y + 4, w: 4, h: 2, side: "top" },
-      { x: isLeft ? plaza.x - 2 : plaza.x + 4, y: plaza.y, w: 2, h: 4, side: isLeft ? "right" : "left" },
-    ], rnd);
+    ];
+    if (!opts.starter) spotChoices.push(
+      { x: isLeft ? plaza.x - 2 : plaza.x + 4, y: plaza.y, w: 2, h: 4, side: isLeft ? "right" : "left" }
+    );
+    const spots = shuffle(spotChoices, rnd);
     let placed = 0;
     for (const s of spots) {
       if (placed >= 2) break;
@@ -353,10 +368,22 @@ function generate(seedStr, opts) {
     return false;
   }
 
+  const hallCount = () => pieces.filter(isHallLike).length;
+
+  // hall override: grow the skeleton to the requested hall count first
+  let spurs = 0, growGuard = 0;
+  if (opts.hallOverride && !opts.starter) {
+    while (hallCount() < opts.hallOverride && growGuard++ < 80) {
+      if (!addSpur()) break;
+      spurs++;
+    }
+  }
+
   // pre-grow the skeleton before any store lands: once stores are placed,
   // their red walls can seal off every attach point and strand the growth
-  let spurs = 0, growGuard = 0;
-  while (legalStoreSpots().length < opts.stores + 4 && growGuard++ < 80) {
+  // (starter mall never grows: exactly the 6 corridor halls)
+  growGuard = 0;
+  while (!opts.starter && legalStoreSpots().length < opts.stores + 4 && growGuard++ < 80) {
     if (!addSpur()) break;
     spurs++;
   }
@@ -365,7 +392,7 @@ function generate(seedStr, opts) {
   while ((stores < opts.stores || security < 1) && guard++ < 300) {
     const spots = shuffle(legalStoreSpots(), rnd);
     if (!spots.length) {
-      if (!addSpur()) break;
+      if (opts.starter || !addSpur()) break;
       spurs++;
       continue;
     }
@@ -392,7 +419,14 @@ function generate(seedStr, opts) {
     }
   }
   if (stores < opts.stores) notes.push("Placed " + stores + " of " + opts.stores + " stores (board is full).");
-  if (spurs) notes.push("Grew " + spurs + " extra hallway spur(s) to fit more stores.");
+  if (opts.hallOverride && !opts.starter) {
+    if (hallCount() > opts.hallOverride)
+      notes.push("Hall override was " + opts.hallOverride + "; grew to " + hallCount() + " halls to fit all stores.");
+    else if (hallCount() < opts.hallOverride)
+      notes.push("Hall override was " + opts.hallOverride + "; only " + hallCount() + " halls fit on the board.");
+  } else if (spurs) {
+    notes.push("Grew " + spurs + " extra hallway spur(s) to fit more stores.");
+  }
 
   // --- 6. access tunnels: lettered pairs A/B/C, mirrored when possible ---
   function tunnelSpotsNow() {
@@ -436,7 +470,7 @@ function generate(seedStr, opts) {
     tunnelPairs++;
   }
 
-  return { pieces, notes, counts: { stores, security, escalators: esc, tunnelPairs, hallsApart } };
+  return { pieces, notes, counts: { stores, security, escalators: esc, tunnelPairs, hallsApart, halls: hallCount() } };
 }
 
 // ---------- rendering: printed-tile look ----------
@@ -550,19 +584,39 @@ function run() {
     stores: +document.getElementById("numStores").value || 0,
     escalators: +document.getElementById("numEscalators").value || 0,
     tunnelPairs: +document.getElementById("numTunnelPairs").value || 0,
+    starter: document.getElementById("starterMode").checked,
   };
-  const result = generate(seed, opts);
+  if (!opts.starter && document.getElementById("hallOverride").checked) {
+    opts.hallOverride = Math.max(4, +document.getElementById("numHalls").value || 0);
+  }
+  let result = generate(seed, opts);
+  if (opts.starter) {
+    // starter never grows spurs, so a random arrangement can fall short of
+    // the requested count; redraw deterministically until every store fits
+    for (let k = 1; k < 60 && result.counts.stores < opts.stores; k++) {
+      result = generate(seed + "~" + k, opts);
+    }
+  }
   const wrap = document.getElementById("board-wrap");
   wrap.innerHTML = "";
   wrap.appendChild(render(result, seed));
   const c = result.counts;
-  let html = `<b>Seed:</b> ${seed} &nbsp; <b>Placed:</b> 2 plazas (${c.hallsApart} hallways apart, linked top and bottom), 4 big stores, ${c.stores} stores, ${c.security} security room, ${c.escalators} escalator(s), ${c.tunnelPairs} tunnel pair(s).`;
+  let html = `<b>Seed:</b> ${seed} &nbsp; <b>Placed:</b> 2 plazas (${c.hallsApart} hallways apart, linked top and bottom), ${c.halls} halls, 4 big stores, ${c.stores} stores, ${c.security} security room, ${c.escalators} escalator(s), ${c.tunnelPairs} tunnel pair(s).`;
   html += `<br>Blue edge = open. Red edge = wall. Matching tunnel letters connect to each other. Escalator arrows show the one-way direction.`;
   if (result.notes.length) html += "<br><b>Notes:</b> " + result.notes.join(" ");
   document.getElementById("summary").innerHTML = html;
 }
 
 document.getElementById("generate").addEventListener("click", run);
+document.getElementById("hallOverride").addEventListener("change", run);
+document.getElementById("starterMode").addEventListener("change", (e) => {
+  if (e.target.checked) {
+    document.getElementById("numStores").value = 15;
+    document.getElementById("numEscalators").value = 0;
+    document.getElementById("numTunnelPairs").value = 0;
+  }
+  run();
+});
 document.getElementById("randomize").addEventListener("click", () => {
   document.getElementById("seed").value = "mall-" + Math.floor(Math.random() * 100000);
   run();
