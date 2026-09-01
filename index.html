@@ -81,7 +81,7 @@
 </div>
 
 <div class="legend">
-  <span><i style="background:#8f5fae"></i>Plaza 6&times;6 (open all sides)</span>
+  <span><i style="background:#8f5fae"></i>Plaza 4&times;4 (open all sides)</span>
   <span><i style="background:#2e2b3f"></i>Big Store 2&times;4 (start zone)</span>
   <span><i style="background:#3a3650"></i>Store 2&times;1</span>
   <span><i style="background:#7a5fae"></i>Hallway 2&times;1 (open all sides)</span>
@@ -142,7 +142,7 @@ const LOOT = [
 ];
 
 // ---------- board model ----------
-const GW = 26, GH = 14, CELL = 40;
+const GW = 22, GH = 12, CELL = 40;
 
 function makeGrid() {
   const g = [];
@@ -180,26 +180,40 @@ function generate(seedStr, opts) {
   const bigNames = shuffle(BIG_STORE_NAMES.slice(), rnd);
   const storeNames = shuffle(STORE_NAMES.slice(), rnd);
 
-  // --- 1. plazas: left and right, open on all sides ---
-  const plazaY = 4; // rows 4-9, leaves 4 rows above and below for big stores
-  const plazaL = place(grid, pieces, { type: "plaza", x: 1, y: plazaY, w: 6, h: 6, openSides: ["top","bottom","left","right"] });
-  const plazaR = place(grid, pieces, { type: "plaza", x: GW - 7, y: plazaY, w: 6, h: 6, openSides: ["top","bottom","left","right"] });
+  // --- 1. plazas: 4x4, left and right, no more than 3 hallways apart ---
+  const hallsApart = 2 + Math.floor(rnd() * 2); // 2 or 3 hallway tiles between plazas
+  const gap = hallsApart * 2;
+  const plazaY = 4; // rows 4-7
+  const startX = Math.floor((GW - (8 + gap)) / 2);
+  const plazaL = place(grid, pieces, { type: "plaza", x: startX, y: plazaY, w: 4, h: 4, openSides: ["top","bottom","left","right"] });
+  const plazaR = place(grid, pieces, { type: "plaza", x: startX + 4 + gap, y: plazaY, w: 4, h: 4, openSides: ["top","bottom","left","right"] });
 
-  // --- 2. big stores: 2 per plaza, long (4-long) side flush to plaza ---
+  // --- 2. two corridors connect the plazas: top row and bottom row ---
+  const corridorRows = [plazaY, plazaY + 3];
+  for (const row of corridorRows) {
+    for (let i = 0; i < hallsApart; i++) {
+      place(grid, pieces, {
+        type: "hall", x: plazaL.x + 4 + i * 2, y: row, w: 2, h: 1,
+        openSides: ["top","bottom","left","right"],
+      });
+    }
+  }
+
+  // --- 3. big stores: 2 per plaza (above, below, or outer side), long side to plaza ---
   let playerNum = 1;
   for (const plaza of [plazaL, plazaR]) {
+    const isLeft = plaza === plazaL;
     const spots = shuffle([
-      { x: plaza.x, y: plaza.y - 2, side: "bottom" },
-      { x: plaza.x + 2, y: plaza.y - 2, side: "bottom" },
-      { x: plaza.x, y: plaza.y + plaza.h, side: "top" },
-      { x: plaza.x + 2, y: plaza.y + plaza.h, side: "top" },
+      { x: plaza.x, y: plaza.y - 2, w: 4, h: 2, side: "bottom" },
+      { x: plaza.x, y: plaza.y + 4, w: 4, h: 2, side: "top" },
+      { x: isLeft ? plaza.x - 2 : plaza.x + 4, y: plaza.y, w: 2, h: 4, side: isLeft ? "right" : "left" },
     ], rnd);
     let placed = 0;
     for (const s of spots) {
       if (placed >= 2) break;
-      if (fits(grid, s.x, s.y, 4, 2)) {
+      if (fits(grid, s.x, s.y, s.w, s.h)) {
         place(grid, pieces, {
-          type: "bigstore", x: s.x, y: s.y, w: 4, h: 2,
+          type: "bigstore", x: s.x, y: s.y, w: s.w, h: s.h,
           openSides: [s.side],
           name: bigNames.pop(),
           sub: "P" + playerNum + " START",
@@ -211,40 +225,6 @@ function generate(seedStr, opts) {
     }
     if (placed < 2) notes.push("Could not fit 2 big stores on a plaza.");
   }
-
-  // --- 3. hallway corridor between plazas, with a vertical jog ---
-  const rowChoices = [plazaY + 1, plazaY + 2, plazaY + 3, plazaY + 4];
-  const rowA = rowChoices[Math.floor(rnd() * rowChoices.length)];
-  let rowB = rowChoices[Math.floor(rnd() * rowChoices.length)];
-  const jogX = 10 + Math.floor(rnd() * 5); // 10..14
-
-  function pathLength(rA, rB) {
-    const lo = Math.min(rA, rB), hi = Math.max(rA, rB);
-    return (jogX - (plazaL.x + plazaL.w)) + (hi - lo + 1) + (plazaR.x - jogX - 1);
-  }
-  // hallways are 2x1 dominoes: nudge the jog rows until the path length is even
-  if (pathLength(rowA, rowB) % 2 !== 0) {
-    const alt = rowChoices.find(r => pathLength(rowA, r) % 2 === 0);
-    if (alt !== undefined) rowB = alt;
-  }
-
-  // ordered path from left plaza to right plaza
-  const path = [];
-  for (let x = plazaL.x + plazaL.w; x < jogX; x++) path.push({ x, y: rowA });
-  if (rowA <= rowB) for (let y = rowA; y <= rowB; y++) path.push({ x: jogX, y });
-  else for (let y = rowA; y >= rowB; y--) path.push({ x: jogX, y });
-  for (let x = jogX + 1; x < plazaR.x; x++) path.push({ x, y: rowB });
-
-  // pair consecutive path cells into 2x1 hallway dominoes
-  for (let i = 0; i + 1 < path.length; i += 2) {
-    const a = path[i], b = path[i + 1];
-    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
-    const w = a.y === b.y ? 2 : 1, h = a.y === b.y ? 1 : 2;
-    if (fits(grid, x, y, w, h)) {
-      place(grid, pieces, { type: "hall", x, y, w, h, openSides: ["top","bottom","left","right"] });
-    }
-  }
-  if (path.length % 2 !== 0) notes.push("Corridor had an odd cell; map is still connected.");
 
   // --- 4. escalators: convert hallway dominoes to one-way escalators ---
   const halls = shuffle(pieces.filter(p => p.type === "hall"), rnd);
@@ -258,17 +238,24 @@ function generate(seedStr, opts) {
   }
 
   // --- 5. stores: 2x1, long side (blue edge) flush against hallway or plaza only ---
-  const corridorSet = new Set(path.map(c => c.x + "," + c.y));
   const storeSpots = [];
-  for (const c of path) {
-    if (!corridorSet.has((c.x + 1) + "," + c.y)) continue;
-    storeSpots.push({ x: c.x, y: c.y - 1, w: 2, h: 1, side: "bottom" });
-    storeSpots.push({ x: c.x, y: c.y + 1, w: 2, h: 1, side: "top" });
+  // above/below each corridor hallway (outside rows and the courtyard between corridors)
+  for (const row of corridorRows) {
+    for (let i = 0; i < hallsApart; i++) {
+      const x = plazaL.x + 4 + i * 2;
+      storeSpots.push({ x, y: row - 1, w: 2, h: 1, side: "bottom" });
+      storeSpots.push({ x, y: row + 1, w: 2, h: 1, side: "top" });
+    }
   }
+  // around plaza edges
   for (const plaza of [plazaL, plazaR]) {
-    for (let y = plaza.y; y < plaza.y + plaza.h - 1; y++) {
+    for (let x = plaza.x; x <= plaza.x + 2; x++) {
+      storeSpots.push({ x, y: plaza.y - 1, w: 2, h: 1, side: "bottom" });
+      storeSpots.push({ x, y: plaza.y + 4, w: 2, h: 1, side: "top" });
+    }
+    for (let y = plaza.y; y <= plaza.y + 2; y++) {
       storeSpots.push({ x: plaza.x - 1, y, w: 1, h: 2, side: "right" });
-      storeSpots.push({ x: plaza.x + plaza.w, y, w: 1, h: 2, side: "left" });
+      storeSpots.push({ x: plaza.x + 4, y, w: 1, h: 2, side: "left" });
     }
   }
   shuffle(storeSpots, rnd);
@@ -334,7 +321,7 @@ function generate(seedStr, opts) {
     tunnels--;
   }
 
-  return { pieces, notes, counts: { stores, security, escalators: esc, tunnelPairs: tunnels / 2 } };
+  return { pieces, notes, counts: { stores, security, escalators: esc, tunnelPairs: tunnels / 2, hallsApart } };
 }
 
 // ---------- rendering: printed-tile look ----------
@@ -480,7 +467,7 @@ function run() {
   wrap.innerHTML = "";
   wrap.appendChild(render(result, seed));
   const c = result.counts;
-  let html = `<b>Seed:</b> ${seed} &nbsp; <b>Placed:</b> 2 plazas, 4 big stores, ${c.stores} stores, ${c.security} security room, ${c.escalators} escalator(s), ${c.tunnelPairs} tunnel pair(s).`;
+  let html = `<b>Seed:</b> ${seed} &nbsp; <b>Placed:</b> 2 plazas (${c.hallsApart} hallways apart, linked top and bottom), 4 big stores, ${c.stores} stores, ${c.security} security room, ${c.escalators} escalator(s), ${c.tunnelPairs} tunnel pair(s).`;
   html += `<br>Blue edge = open. Red edge = wall. Matching tunnel letters connect to each other. Escalator arrows show the one-way direction.`;
   if (result.notes.length) html += "<br><b>Notes:</b> " + result.notes.join(" ");
   document.getElementById("summary").innerHTML = html;
