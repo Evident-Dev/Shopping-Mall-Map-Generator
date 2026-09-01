@@ -124,7 +124,7 @@ function shuffle(arr, rnd) {
 }
 
 // ---------- board model ----------
-const GW = 22, GH = 12, CELL = 40;
+const GW = 24, GH = 14, CELL = 40;
 
 function makeGrid() {
   const g = [];
@@ -162,7 +162,7 @@ function generate(seedStr, opts) {
   // --- 1. plazas: 4x4, left and right, no more than 3 hallways apart ---
   const hallsApart = 2 + Math.floor(rnd() * 2); // 2 or 3 hallway tiles between plazas
   const gap = hallsApart * 2;
-  const plazaY = 4; // rows 4-7
+  const plazaY = 5; // rows 5-8
   const startX = Math.floor((GW - (8 + gap)) / 2);
   const plazaL = place(grid, pieces, { type: "plaza", x: startX, y: plazaY, w: 4, h: 4, openSides: ["top","bottom","left","right"] });
   const plazaR = place(grid, pieces, { type: "plaza", x: startX + 4 + gap, y: plazaY, w: 4, h: 4, openSides: ["top","bottom","left","right"] });
@@ -215,28 +215,6 @@ function generate(seedStr, opts) {
   }
 
   // --- 5. stores: 2x1, long side (blue edge) flush against hallway or plaza only ---
-  const storeSpots = [];
-  // above/below each corridor hallway (outside rows and the courtyard between corridors)
-  for (const row of corridorRows) {
-    for (let i = 0; i < hallsApart; i++) {
-      const x = plazaL.x + 4 + i * 2;
-      storeSpots.push({ x, y: row - 1, w: 2, h: 1, side: "bottom" });
-      storeSpots.push({ x, y: row + 1, w: 2, h: 1, side: "top" });
-    }
-  }
-  // around plaza edges
-  for (const plaza of [plazaL, plazaR]) {
-    for (let x = plaza.x; x <= plaza.x + 2; x++) {
-      storeSpots.push({ x, y: plaza.y - 1, w: 2, h: 1, side: "bottom" });
-      storeSpots.push({ x, y: plaza.y + 4, w: 2, h: 1, side: "top" });
-    }
-    for (let y = plaza.y; y <= plaza.y + 2; y++) {
-      storeSpots.push({ x: plaza.x - 1, y, w: 1, h: 2, side: "right" });
-      storeSpots.push({ x: plaza.x + 4, y, w: 1, h: 2, side: "left" });
-    }
-  }
-  shuffle(storeSpots, rnd);
-
   function doorTouches(s) {
     // every cell of the blue edge must touch hallway or plaza (not an escalator side wall)
     const t = ["hall", "plaza"];
@@ -247,23 +225,74 @@ function generate(seedStr, opts) {
     return false;
   }
 
-  let stores = 0, security = 0;
-  for (const s of storeSpots) {
-    if (stores >= opts.stores && security >= 1) break;
-    if (!fits(grid, s.x, s.y, s.w, s.h)) continue;
-    if (!doorTouches(s)) continue;
+  function legalStoreSpots() {
+    const spots = [];
+    for (const pc of pieces) {
+      if (pc.type === "hall") {
+        if (pc.w === 2) {
+          spots.push({ x: pc.x, y: pc.y - 1, w: 2, h: 1, side: "bottom" });
+          spots.push({ x: pc.x, y: pc.y + 1, w: 2, h: 1, side: "top" });
+        } else {
+          spots.push({ x: pc.x - 1, y: pc.y, w: 1, h: 2, side: "right" });
+          spots.push({ x: pc.x + 1, y: pc.y, w: 1, h: 2, side: "left" });
+        }
+      } else if (pc.type === "plaza") {
+        for (let x = pc.x; x <= pc.x + 2; x++) {
+          spots.push({ x, y: pc.y - 1, w: 2, h: 1, side: "bottom" });
+          spots.push({ x, y: pc.y + 4, w: 2, h: 1, side: "top" });
+        }
+        for (let y = pc.y; y <= pc.y + 2; y++) {
+          spots.push({ x: pc.x - 1, y, w: 1, h: 2, side: "right" });
+          spots.push({ x: pc.x + 4, y, w: 1, h: 2, side: "left" });
+        }
+      }
+    }
+    return spots.filter(s => fits(grid, s.x, s.y, s.w, s.h) && doorTouches(s));
+  }
+
+  // when the core runs out of storefronts, grow the mall with a hallway spur
+  // (halls and plazas are open on all sides, so any flush attachment connects)
+  function addSpur() {
+    const cands = [];
+    for (const pc of pieces) {
+      if (pc.type !== "hall" && pc.type !== "plaza") continue;
+      for (let x = pc.x; x < pc.x + pc.w; x++) {
+        cands.push({ x, y: pc.y - 2, w: 1, h: 2 });
+        cands.push({ x, y: pc.y + pc.h, w: 1, h: 2 });
+      }
+      for (let y = pc.y; y < pc.y + pc.h; y++) {
+        cands.push({ x: pc.x - 2, y, w: 2, h: 1 });
+        cands.push({ x: pc.x + pc.w, y, w: 2, h: 1 });
+      }
+    }
+    shuffle(cands, rnd);
+    for (const c of cands) {
+      if (!fits(grid, c.x, c.y, c.w, c.h)) continue;
+      place(grid, pieces, { type: "hall", x: c.x, y: c.y, w: c.w, h: c.h, openSides: ["top","bottom","left","right"] });
+      return true;
+    }
+    return false;
+  }
+
+  let stores = 0, security = 0, spurs = 0, guard = 0;
+  while ((stores < opts.stores || security < 1) && guard++ < 300) {
+    const spots = shuffle(legalStoreSpots(), rnd);
+    if (!spots.length) {
+      if (!addSpur()) break;
+      spurs++;
+      continue;
+    }
+    const s = spots[0];
     if (security < 1) {
       place(grid, pieces, { type: "security", x: s.x, y: s.y, w: s.w, h: s.h, openSides: [s.side], name: "SECURITY" });
       security++;
     } else {
-      place(grid, pieces, {
-        type: "store", x: s.x, y: s.y, w: s.w, h: s.h,
-        openSides: [s.side],
-      });
+      place(grid, pieces, { type: "store", x: s.x, y: s.y, w: s.w, h: s.h, openSides: [s.side] });
       stores++;
     }
   }
-  if (stores < opts.stores) notes.push("Placed " + stores + " of " + opts.stores + " stores (ran out of legal spots).");
+  if (stores < opts.stores) notes.push("Placed " + stores + " of " + opts.stores + " stores (board is full).");
+  if (spurs) notes.push("Grew " + spurs + " extra hallway spur(s) to fit more stores.");
 
   // --- 6. access tunnels: lettered pairs A/B/C, one open edge each ---
   const OPPOSITE = { top: "bottom", bottom: "top", left: "right", right: "left" };
