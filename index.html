@@ -66,10 +66,10 @@
     <input type="number" id="numHalls" value="6" min="4" max="40">
   </label>
   <label>Stores
-    <input type="number" id="numStores" value="8" min="0" max="30">
+    <input type="number" id="numStores" value="16" min="0" max="26">
   </label>
   <label>Escalators
-    <input type="number" id="numEscalators" value="1" min="0" max="4">
+    <input type="number" id="numEscalators" value="1" min="0" max="8">
   </label>
   <label>Tunnel pairs
     <input type="number" id="numTunnelPairs" value="2" min="0" max="3">
@@ -232,26 +232,68 @@ function generate(seedStr, opts) {
   }
 
   // --- 4. escalators: prefer converting mirrored hallway pairs ---
+  // escalators may chain, but a chain all runs one way: a new escalator
+  // takes the direction of any escalator it touches, and is skipped when
+  // those disagree or run across it
   let esc = 0;
+  // empty cells past a spur escalator's end, kept for a tunnel
+  const reservedForTunnels = [];
+  // tunnels keep their distance from every other tunnel
+  const TUNNEL_SPACING = 6;
+  const tooClose = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < TUNNEL_SPACING;
+  const overlapsReserved = r => reservedForTunnels.some(t =>
+    t.x >= r.x && t.x < r.x + r.w && t.y >= r.y && t.y < r.y + r.h);
   const halls = () => pieces.filter(p => p.type === "hall" && p.w === 2);
+  const neighbours = h => ALL_OPEN.flatMap(side => sideCells(h, side))
+    .map(([cx, cy]) => (cx < 0 || cy < 0 || cx >= GW || cy >= GH) ? null : grid[cy][cx]);
+  const touchesPiece = (h, other) => neighbours(h).includes(other);
+  const runsAlong = (h, dir) => (h.w === 2) === (dir === "left" || dir === "right");
+  // null: free choice; false: no legal direction; otherwise the required one
+  function forcedDir(h) {
+    const dirs = new Set(neighbours(h).filter(n => n && n.type === "escalator").map(n => n.dir));
+    if (!dirs.size) return null;
+    if (dirs.size > 1) return false;
+    const [dir] = dirs;
+    return runsAlong(h, dir) ? dir : false;
+  }
+  const randomDir = h => h.w === 2 ? (rnd() < 0.5 ? "right" : "left") : (rnd() < 0.5 ? "down" : "up");
   function toEscalator(h, dir) {
     h.type = "escalator";
     h.dir = dir;
-    h.openSides = ["left", "right"];
+    h.openSides = h.w === 2 ? ["left", "right"] : ["top", "bottom"];
+  }
+  // a mirrored pair runs in opposite directions, so a pair that touches
+  // cannot chain; those halls are left to the single pass
+  function mirrorPair(h) {
+    return pieces.find(p => p !== h && p.type === "hall" && p.w === h.w && p.h === h.h && p.y === h.y && p.x === mirrorX(h));
+  }
+  // corridor pairs mirror across the two corridor rows as well, so the
+  // pair makes a loop around the middle instead of a trap in it
+  function loopPair(h) {
+    const otherRow = h.y === corridorRows[0] ? corridorRows[1] : corridorRows[0];
+    return pieces.find(p => p !== h && p.type === "hall" && p.w === 2 && p.y === otherRow && p.x === mirrorX(h));
+  }
+  function convertPair(h, m, dir) {
+    if (touchesPiece(h, m)) return false;
+    const fh = forcedDir(h), fm = forcedDir(m);
+    if (fh === false || fm === false) return false;
+    dir = fh || (fm ? mirrorDirName(fm) : dir);
+    if (fm && fm !== mirrorDirName(dir)) return false;
+    toEscalator(h, dir);
+    toEscalator(m, mirrorDirName(dir));
+    return true;
   }
   for (const h of shuffle(halls(), rnd)) {
     if (esc + 2 > opts.escalators) break;
     if (h.type !== "hall") continue;
-    const m = pieces.find(p => p !== h && p.type === "hall" && p.w === 2 && p.y === h.y && p.x === mirrorX(h));
-    if (!m) continue;
-    const dir = rnd() < 0.5 ? "right" : "left";
-    toEscalator(h, dir);
-    toEscalator(m, mirrorDirName(dir));
-    esc += 2;
+    const m = loopPair(h);
+    if (m && convertPair(h, m, randomDir(h))) esc += 2;
   }
   for (const h of shuffle(halls(), rnd)) {
     if (esc >= opts.escalators) break;
-    toEscalator(h, rnd() < 0.5 ? "right" : "left");
+    const forced = forcedDir(h);
+    if (forced === false) continue;
+    toEscalator(h, forced || randomDir(h));
     esc++;
   }
 
@@ -288,7 +330,7 @@ function generate(seedStr, opts) {
         }
       }
     }
-    return spots.filter(s => fits(grid, s.x, s.y, s.w, s.h) && doorTouches(s));
+    return spots.filter(s => fits(grid, s.x, s.y, s.w, s.h) && doorTouches(s) && !overlapsReserved(s));
   }
 
   // hall-to-hall connection rules:
@@ -393,6 +435,62 @@ function generate(seedStr, opts) {
     if (!addSpur(opts.halls)) break;
   }
 
+  // more escalators than corridor halls: turn spur halls into escalators,
+  // but only ones with nothing hall-like on their long sides, so closing
+  // those sides cannot cut a hall off
+  const longSidesClear = h => longSidesOf(h).every(side =>
+    sideCells(h, side).every(([cx, cy]) => !cellIs(grid, cx, cy, ["hall", "escalator"])));
+  // both ends of an escalator must lead somewhere: a hall, plaza, or
+  // escalator with an open facing edge, or a tunnel placed later. An empty
+  // end cell is reserved for a tunnel while the tunnel budget lasts.
+  const endsOf = h => h.w === 2 ? ["left", "right"] : ["top", "bottom"];
+  const tunnelBudget = () => 2 * Math.min(opts.tunnelPairs, 3) - reservedForTunnels.length;
+  function endState(h, side) {
+    const [[cx, cy]] = sideCells(h, side);
+    if (cx < 0 || cy < 0 || cx >= GW || cy >= GH) return "blocked";
+    const n = grid[cy][cx];
+    if (!n) return "free";
+    return CONNECTORS.includes(n.type) && (n.openSides || []).includes(OPPOSITE[side]) ? "linked" : "blocked";
+  }
+  // number of ends needing a tunnel, or -1 when an end can never lead anywhere
+  function freeEnds(h) {
+    const states = endsOf(h).map(side => endState(h, side));
+    if (states.includes("blocked")) return -1;
+    for (const side of endsOf(h)) {
+      if (endState(h, side) !== "free") continue;
+      const [[cx, cy]] = sideCells(h, side);
+      if (reservedForTunnels.some(t => tooClose(t, { x: cx, y: cy }))) return -1;
+    }
+    return states.filter(st => st === "free").length;
+  }
+  function reserveEnds(h) {
+    for (const side of endsOf(h)) {
+      if (endState(h, side) !== "free") continue;
+      const [[cx, cy]] = sideCells(h, side);
+      reservedForTunnels.push({ x: cx, y: cy, side: OPPOSITE[side] });
+    }
+  }
+  for (const h of shuffle(pieces.filter(p => p.type === "hall" && p.depth > 0), rnd)) {
+    if (esc >= opts.escalators) break;
+    if (h.type !== "hall" || !longSidesClear(h)) continue;
+    const freeH = freeEnds(h);
+    if (freeH < 0 || freeH > tunnelBudget()) continue;
+    const m = mirrorPair(h);
+    const freeM = m ? freeEnds(m) : -1;
+    if (m && esc + 2 <= opts.escalators && longSidesClear(m) && freeM >= 0
+        && freeH + freeM <= tunnelBudget() && convertPair(h, m, randomDir(h))) {
+      reserveEnds(h);
+      reserveEnds(m);
+      esc += 2;
+      continue;
+    }
+    const forced = forcedDir(h);
+    if (forced === false) continue;
+    toEscalator(h, forced || randomDir(h));
+    reserveEnds(h);
+    esc++;
+  }
+
   const ROOMS = ["store", "security"];
   const hasRoom = h => ALL_OPEN.some(side =>
     sideCells(h, side).some(([cx, cy]) => cellIs(grid, cx, cy, ROOMS)));
@@ -412,7 +510,7 @@ function generate(seedStr, opts) {
       // room for two: mirror the store when the mirrored spot is also legal
       const placed = placePair({ type: "store", x: s.x, y: s.y, w: s.w, h: s.h, openSides: [s.side] });
       const twin = placed[1];
-      if (twin && !doorTouches({ x: twin.x, y: twin.y, w: twin.w, h: twin.h, side: twin.openSides[0] })) {
+      if (twin && (overlapsReserved(twin) || !doorTouches({ x: twin.x, y: twin.y, w: twin.w, h: twin.h, side: twin.openSides[0] }))) {
         // mirror landed against something that is not a storefront; undo it
         for (let yy = twin.y; yy < twin.y + twin.h; yy++)
           for (let xx = twin.x; xx < twin.x + twin.w; xx++)
@@ -435,11 +533,13 @@ function generate(seedStr, opts) {
   if (emptyHalls) notes.push(plural(emptyHalls, "hall") + " with no store.");
 
   // --- 6. access tunnels: lettered pairs A/B/C, mirrored when possible ---
+  const tunnels = () => pieces.filter(p => p.type === "tunnel");
   function tunnelSpotsNow() {
     const spots = [];
     for (let y = 0; y < GH; y++)
       for (let x = 0; x < GW; x++) {
         if (grid[y][x]) continue;
+        if (tunnels().some(t => tooClose(t, { x, y }))) continue;
         for (const [dx, dy, side] of [[1,0,"right"],[-1,0,"left"],[0,1,"bottom"],[0,-1,"top"]]) {
           const nx = x + dx, ny = y + dy;
           if (!cellIs(grid, nx, ny, WALKABLE)) continue;
@@ -454,29 +554,81 @@ function generate(seedStr, opts) {
   }
   const pairsWanted = Math.min(opts.tunnelPairs, 3);
   let tunnelPairs = 0;
+  const placeTunnel = (t, label) =>
+    place(grid, pieces, { type: "tunnel", x: t.x, y: t.y, w: 1, h: 1, openSides: [t.side], name: label });
+  // escalator ends waiting for a tunnel are served before random spots
+  const required = reservedForTunnels.filter(t => !grid[t.y][t.x]);
   while (tunnelPairs < pairsWanted) {
     const spots = shuffle(tunnelSpotsNow(), rnd);
     if (spots.length < 2) break;
     const label = "ABC"[tunnelPairs];
-    const a = spots[0];
-    place(grid, pieces, { type: "tunnel", x: a.x, y: a.y, w: 1, h: 1, openSides: [a.side], name: label });
-    // partner: prefer the mirrored spot, else any legal spot, but never
-    // right next to its twin (a tunnel pair side by side is pointless)
-    const farEnough = t => Math.abs(t.x - a.x) + Math.abs(t.y - a.y) > 4;
-    const rest = tunnelSpotsNow().filter(farEnough);
+    const a = required.shift() || spots[0];
+    if (tunnels().some(t => tooClose(t, a))) break;
+    placeTunnel(a, label);
+    // partner: another waiting escalator end, else the mirrored spot, else
+    // any legal spot
+    const rest = tunnelSpotsNow();
+    const waiting = required.find(t => !tunnels().some(u => tooClose(u, t)));
     const mirror = rest.find(t => t.x === GW - a.x - 1 && t.y === a.y);
-    const b = mirror || shuffle(rest, rnd)[0];
+    const b = waiting || mirror || shuffle(rest, rnd)[0];
     if (!b) {
       // no home for the partner; take the first tunnel back off the board
       const orphan = pieces.pop();
       grid[orphan.y][orphan.x] = null;
       break;
     }
-    place(grid, pieces, { type: "tunnel", x: b.x, y: b.y, w: 1, h: 1, openSides: [b.side], name: label });
+    placeTunnel(b, label);
+    if (waiting) required.splice(required.indexOf(waiting), 1);
     tunnelPairs++;
   }
 
-  return { pieces, notes, counts: { stores, security, escalators: esc, tunnelPairs, hallsApart, halls: hallCount(), emptyHalls } };
+  // escalator ends that still lead nowhere
+  const leadsSomewhere = (e, side) => {
+    const [[cx, cy]] = sideCells(e, side);
+    if (cx < 0 || cy < 0 || cx >= GW || cy >= GH) return false;
+    const n = grid[cy][cx];
+    return !!n && (CONNECTORS.includes(n.type) || n.type === "tunnel") && (n.openSides || []).includes(OPPOSITE[side]);
+  };
+  const unusedEscalatorEnds = pieces.filter(p => p.type === "escalator")
+    .reduce((n, e) => n + endsOf(e).filter(side => !leadsSomewhere(e, side)).length, 0);
+  if (unusedEscalatorEnds) notes.push(plural(unusedEscalatorEnds, "escalator end") + " leading nowhere.");
+
+  // every room and walkable piece must reach every other, walking
+  // escalators only in their arrow direction and tunnels twin to twin
+  const WALK = ["plaza", "hall", "escalator", "tunnel", "store", "bigstore", "security"];
+  const nodes = pieces.filter(p => WALK.includes(p.type));
+  const canLeave = (p, side) => p.type !== "escalator" || side === p.dir;
+  const canEnter = (p, side) => p.type !== "escalator" || side === OPPOSITE[p.dir];
+  const exits = new Map(nodes.map(p => [p, []]));
+  for (const p of nodes) {
+    for (const side of p.openSides || []) {
+      if (!canLeave(p, side)) continue;
+      for (const [cx, cy] of sideCells(p, side)) {
+        if (cx < 0 || cy < 0 || cx >= GW || cy >= GH) continue;
+        const n = grid[cy][cx];
+        if (!n || n === p || !exits.has(n)) continue;
+        if (!(n.openSides || []).includes(OPPOSITE[side]) || !canEnter(n, OPPOSITE[side])) continue;
+        exits.get(p).push(n);
+      }
+    }
+    if (p.type === "tunnel") {
+      const twin = nodes.find(t => t !== p && t.type === "tunnel" && t.name === p.name);
+      if (twin) exits.get(p).push(twin);
+    }
+  }
+  const entries = new Map(nodes.map(p => [p, []]));
+  for (const [p, outs] of exits) for (const n of outs) entries.get(n).push(p);
+  function reachable(start, links) {
+    const seen = new Set([start]);
+    const queue = [start];
+    while (queue.length) for (const n of links.get(queue.pop())) if (!seen.has(n)) { seen.add(n); queue.push(n); }
+    return seen;
+  }
+  const forward = reachable(nodes[0], exits), backward = reachable(nodes[0], entries);
+  const stranded = nodes.filter(p => !forward.has(p) || !backward.has(p)).length;
+  if (stranded) notes.push("Not every store can reach every other store.");
+
+  return { pieces, notes, counts: { stores, security, escalators: esc, tunnelPairs, hallsApart, halls: hallCount(), emptyHalls, unusedEscalatorEnds, stranded } };
 }
 
 // ---------- rendering: printed-tile look ----------
@@ -594,16 +746,25 @@ function render(result, seedStr) {
 }
 
 // ---------- wiring ----------
+// first-game layout: fixed settings, whatever the boxes say
+const STARTER = { halls: 6, stores: 15, escalators: 0, tunnelPairs: 0, starter: true };
+
 function run(starter) {
   const seed = document.getElementById("seed").value || "mall";
   const hallsBox = document.getElementById("numHalls");
   hallsBox.classList.remove("raised");
-  const opts = {
+  const readCount = (id, max) => {
+    const box = document.getElementById(id);
+    const value = Math.min(Math.max(0, +box.value || 0), max);
+    box.value = value;
+    return value;
+  };
+  const opts = starter ? { ...STARTER } : {
     halls: Math.max(4, +hallsBox.value || 0),
-    stores: +document.getElementById("numStores").value || 0,
-    escalators: +document.getElementById("numEscalators").value || 0,
-    tunnelPairs: +document.getElementById("numTunnelPairs").value || 0,
-    starter: !!starter,
+    stores: readCount("numStores", 26),
+    escalators: readCount("numEscalators", 8),
+    tunnelPairs: readCount("numTunnelPairs", 3),
+    starter: false,
   };
   let result;
   if (opts.starter) {
@@ -615,10 +776,10 @@ function run(starter) {
     }
   } else {
     // the box is a minimum: raise it one hall at a time and retry until the
-    // smallest count that fits every store and tunnel pair is found. At each
-    // count a few redraws are tried, keeping the one with the fewest empty halls.
+    // smallest count that fits every store, escalator, and tunnel pair is
+    // found. At each count a few redraws are tried, keeping the one with the
+    // fewest empty halls.
     const askedHalls = opts.halls;
-    const wantedTunnelPairs = Math.min(opts.tunnelPairs, 3);
     const REDRAWS = 12, MAX_HALLS = 60;
     let fitting = null;
     for (let halls = askedHalls; halls <= MAX_HALLS && !fitting; halls++) {
@@ -626,7 +787,10 @@ function run(starter) {
       for (let k = 0; k < REDRAWS; k++) {
         const r = generate(k ? seed + "~" + k : seed, opts);
         result = r;
-        if (r.counts.stores < opts.stores || r.counts.tunnelPairs < wantedTunnelPairs) continue;
+        const short = r.counts.stores < opts.stores || r.counts.escalators < opts.escalators
+          || r.counts.tunnelPairs < opts.tunnelPairs || r.counts.unusedEscalatorEnds > 0
+          || r.counts.stranded > 0;
+        if (short) continue;
         if (!fitting || r.counts.emptyHalls < fitting.counts.emptyHalls) fitting = r;
         if (r.counts.emptyHalls === 0) break;
       }
@@ -649,13 +813,7 @@ function run(starter) {
 }
 
 document.getElementById("generate").addEventListener("click", () => run());
-document.getElementById("starter").addEventListener("click", () => {
-  document.getElementById("numHalls").value = 6;
-  document.getElementById("numStores").value = 15;
-  document.getElementById("numEscalators").value = 0;
-  document.getElementById("numTunnelPairs").value = 0;
-  run(true);
-});
+document.getElementById("starter").addEventListener("click", () => run(true));
 document.getElementById("randomize").addEventListener("click", () => {
   document.getElementById("seed").value = "mall-" + Math.floor(Math.random() * 100000);
   run();
@@ -682,7 +840,7 @@ document.getElementById("save").addEventListener("click", () => {
   };
   img.src = url;
 });
-run();
+run(true);
 </script>
 </body>
 </html>
