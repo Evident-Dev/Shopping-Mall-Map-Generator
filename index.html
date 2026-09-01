@@ -203,32 +203,19 @@ function generate(seedStr, opts) {
     }
   }
 
-  // --- 3. big stores: 2 per plaza, independent per side (top/bottom/outer) ---
-  let playerNum = 1;
-  for (const plaza of [plazaL, plazaR]) {
-    const isLeft = plaza === plazaL;
-    const spotChoices = [
-      { x: plaza.x, y: plaza.y - 2, w: 4, h: 2, side: "bottom" },
-      { x: plaza.x, y: plaza.y + 4, w: 4, h: 2, side: "top" },
-    ];
-    if (!opts.starter) spotChoices.push(
-      { x: isLeft ? plaza.x - 2 : plaza.x + 4, y: plaza.y, w: 2, h: 4, side: isLeft ? "right" : "left" }
-    );
-    const spots = shuffle(spotChoices, rnd);
-    let placed = 0;
-    for (const s of spots) {
-      if (placed >= 2) break;
-      if (fits(grid, s.x, s.y, s.w, s.h)) {
-        place(grid, pieces, {
-          type: "bigstore", x: s.x, y: s.y, w: s.w, h: s.h,
-          openSides: [s.side],
-          name: String(playerNum),
-        });
-        playerNum++;
-        placed++;
-      }
+  // --- 3. big stores ---
+  // starter mall: two per plaza, top and bottom. Otherwise they are placed
+  // once the halls exist, see below.
+  let bigStores = 0;
+  function placeBigStore(s) {
+    bigStores++;
+    place(grid, pieces, { type: "bigstore", x: s.x, y: s.y, w: s.w, h: s.h, openSides: [s.side], name: String(bigStores) });
+  }
+  if (opts.starter) {
+    for (const plaza of [plazaL, plazaR]) {
+      placeBigStore({ x: plaza.x, y: plaza.y - 2, w: 4, h: 2, side: "bottom" });
+      placeBigStore({ x: plaza.x, y: plaza.y + 4, w: 4, h: 2, side: "top" });
     }
-    if (placed < 2) notes.push("Only one big store fit on a plaza.");
   }
 
   // --- 4. escalators: prefer converting mirrored hallway pairs ---
@@ -491,7 +478,52 @@ function generate(seedStr, opts) {
     esc++;
   }
 
-  const ROOMS = ["store", "security"];
+  // a big store's door edge is 4 cells long and must sit either on a plaza
+  // or across exactly two end-to-end halls, corridor or spur
+  function legalBigStoreSpots() {
+    const spots = [];
+    const seen = new Set();
+    const consider = (x, y, w, h, side) => {
+      const key = [x, y, w, h, side].join();
+      if (seen.has(key)) return;
+      seen.add(key);
+      if (!fits(grid, x, y, w, h) || overlapsReserved({ x, y, w, h })) return;
+      const hosts = sideCells({ x, y, w, h }, side)
+        .map(([cx, cy]) => cellIs(grid, cx, cy, ["plaza", "hall"]) ? grid[cy][cx] : null);
+      if (hosts.includes(null)) return;
+      const distinct = new Set(hosts).size;
+      const onPlaza = distinct === 1 && hosts[0].type === "plaza";
+      const onTwoHalls = distinct === 2 && hosts.every(p => p.type === "hall");
+      if (onPlaza || onTwoHalls) spots.push({ x, y, w, h, side });
+    };
+    for (const pc of pieces) {
+      if (pc.type !== "plaza" && pc.type !== "hall") continue;
+      for (let x = pc.x - 3; x < pc.x + pc.w; x++) {
+        consider(x, pc.y - 2, 4, 2, "bottom");
+        consider(x, pc.y + pc.h, 4, 2, "top");
+      }
+      for (let y = pc.y - 3; y < pc.y + pc.h; y++) {
+        consider(pc.x - 2, y, 2, 4, "right");
+        consider(pc.x + pc.w, y, 2, 4, "left");
+      }
+    }
+    return spots;
+  }
+  // random spot each time, taking its mirror next when that is legal too
+  let bigGuard = 0;
+  while (!opts.starter && bigStores < 4 && bigGuard++ < 20) {
+    const spots = shuffle(legalBigStoreSpots(), rnd);
+    if (!spots.length) break;
+    const s = spots[0];
+    placeBigStore(s);
+    if (bigStores >= 4) break;
+    const mirror = { x: mirrorX(s), y: s.y, w: s.w, h: s.h, side: mirrorSideName(s.side) };
+    const key = t => [t.x, t.y, t.w, t.h, t.side].join();
+    if (legalBigStoreSpots().some(t => key(t) === key(mirror))) placeBigStore(mirror);
+  }
+  if (bigStores < 4) notes.push("Only " + plural(bigStores, "big store") + " fit.");
+
+  const ROOMS = ["store", "security", "bigstore"];
   const hasRoom = h => ALL_OPEN.some(side =>
     sideCells(h, side).some(([cx, cy]) => cellIs(grid, cx, cy, ROOMS)));
   // fill from the core outward; at the same depth a hall with no storefront
@@ -628,7 +660,7 @@ function generate(seedStr, opts) {
   const stranded = nodes.filter(p => !forward.has(p) || !backward.has(p)).length;
   if (stranded) notes.push("Not every store can reach every other store.");
 
-  return { pieces, notes, counts: { stores, security, escalators: esc, tunnelPairs, hallsApart, halls: hallCount(), emptyHalls, unusedEscalatorEnds, stranded } };
+  return { pieces, notes, counts: { stores, security, bigStores, escalators: esc, tunnelPairs, hallsApart, halls: hallCount(), emptyHalls, unusedEscalatorEnds, stranded } };
 }
 
 // ---------- rendering: printed-tile look ----------
@@ -787,7 +819,7 @@ function run(starter) {
       for (let k = 0; k < REDRAWS; k++) {
         const r = generate(k ? seed + "~" + k : seed, opts);
         result = r;
-        const short = r.counts.stores < opts.stores || r.counts.escalators < opts.escalators
+        const short = r.counts.stores < opts.stores || r.counts.bigStores < 4 || r.counts.escalators < opts.escalators
           || r.counts.tunnelPairs < opts.tunnelPairs || r.counts.unusedEscalatorEnds > 0
           || r.counts.stranded > 0;
         if (short) continue;
@@ -807,7 +839,7 @@ function run(starter) {
   wrap.innerHTML = "";
   wrap.appendChild(render(result, seed));
   const c = result.counts;
-  let html = `<b>Seed:</b> ${seed} &nbsp; 2 plazas (${c.hallsApart} halls apart), ${plural(c.halls, "hall")}, 4 big stores, ${plural(c.stores, "store")}, ${plural(c.security, "security room")}, ${plural(c.escalators, "escalator")}, ${plural(c.tunnelPairs, "tunnel pair")}.`;
+  let html = `<b>Seed:</b> ${seed} &nbsp; 2 plazas (${c.hallsApart} halls apart), ${plural(c.halls, "hall")}, ${plural(c.bigStores, "big store")}, ${plural(c.stores, "store")}, ${plural(c.security, "security room")}, ${plural(c.escalators, "escalator")}, ${plural(c.tunnelPairs, "tunnel pair")}.`;
   if (result.notes.length) html += "<br><b>Notes:</b> " + result.notes.join(" ");
   document.getElementById("summary").innerHTML = html;
 }
