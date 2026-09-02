@@ -102,219 +102,254 @@
 <script>
 "use strict";
 
-// ---------- seeded RNG ----------
-function hashSeed(str) {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 16777619);
+// ---------- seeded random numbers ----------
+// FNV-1a hash of the seed text, so any text becomes a number
+function hashSeed(text) {
+  let hash = 2166136261 >>> 0;
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
   }
-  return h >>> 0;
+  return hash >>> 0;
 }
-function mulberry32(a) {
+// mulberry32: a small generator that returns numbers in [0, 1). The same
+// seed number always gives the same sequence.
+function makeRandom(seedNumber) {
+  let state = seedNumber;
   return function () {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    state |= 0;
+    state = (state + 0x6D2B79F5) | 0;
+    let mixed = Math.imul(state ^ (state >>> 15), 1 | state);
+    mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed;
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
   };
 }
-function plural(n, word) {
-  return n + " " + word + (n === 1 ? "" : "s");
+function plural(count, word) {
+  return count + " " + word + (count === 1 ? "" : "s");
 }
-function shuffle(arr, rnd) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(rnd() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
+// Fisher-Yates shuffle in place, driven by the seeded generator
+function shuffle(items, random) {
+  for (let index = items.length - 1; index > 0; index--) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    [items[index], items[swapIndex]] = [items[swapIndex], items[index]];
   }
-  return arr;
+  return items;
 }
 
 // ---------- board model ----------
-const GW = 24, GH = 14, CELL = 40;
+// The board is a grid of cells. Every piece is a rectangle of cells with
+// x, y, width, height, a type, and the sides that are open (blue edges).
+const GRID_WIDTH = 24, GRID_HEIGHT = 14, CELL_SIZE = 40;
+const ALL_SIDES = ["top", "bottom", "left", "right"];
+const OPPOSITE_SIDE = { top: "bottom", bottom: "top", left: "right", right: "left" };
+const WALKABLE = ["plaza", "hall", "escalator", "tunnel"];
 
 function makeGrid() {
-  const g = [];
-  for (let y = 0; y < GH; y++) g.push(new Array(GW).fill(null));
-  return g;
+  const grid = [];
+  for (let y = 0; y < GRID_HEIGHT; y++) grid.push(new Array(GRID_WIDTH).fill(null));
+  return grid;
 }
-function fits(grid, x, y, w, h) {
-  if (x < 0 || y < 0 || x + w > GW || y + h > GH) return false;
-  for (let yy = y; yy < y + h; yy++)
-    for (let xx = x; xx < x + w; xx++)
-      if (grid[yy][xx]) return false;
+function inBounds(x, y) {
+  return x >= 0 && y >= 0 && x < GRID_WIDTH && y < GRID_HEIGHT;
+}
+function pieceAt(grid, x, y) {
+  return inBounds(x, y) ? grid[y][x] : null;
+}
+function cellIs(grid, x, y, types) {
+  const piece = pieceAt(grid, x, y);
+  return !!piece && types.includes(piece.type);
+}
+function fits(grid, x, y, width, height) {
+  if (x < 0 || y < 0 || x + width > GRID_WIDTH || y + height > GRID_HEIGHT) return false;
+  for (let row = y; row < y + height; row++)
+    for (let column = x; column < x + width; column++)
+      if (grid[row][column]) return false;
   return true;
 }
 function place(grid, pieces, piece) {
-  for (let yy = piece.y; yy < piece.y + piece.h; yy++)
-    for (let xx = piece.x; xx < piece.x + piece.w; xx++)
-      grid[yy][xx] = piece;
+  for (let row = piece.y; row < piece.y + piece.height; row++)
+    for (let column = piece.x; column < piece.x + piece.width; column++)
+      grid[row][column] = piece;
   pieces.push(piece);
   return piece;
 }
-function cellIs(grid, x, y, types) {
-  if (x < 0 || y < 0 || x >= GW || y >= GH) return false;
-  const p = grid[y][x];
-  return !!p && types.includes(p.type);
+// the cells just outside one side of a rectangle, as [x, y] pairs
+function cellsOutside(rectangle, side) {
+  if (side === "top")    return Array.from({ length: rectangle.width }, (_, offset) => [rectangle.x + offset, rectangle.y - 1]);
+  if (side === "bottom") return Array.from({ length: rectangle.width }, (_, offset) => [rectangle.x + offset, rectangle.y + rectangle.height]);
+  if (side === "left")   return Array.from({ length: rectangle.height }, (_, offset) => [rectangle.x - 1, rectangle.y + offset]);
+  return Array.from({ length: rectangle.height }, (_, offset) => [rectangle.x + rectangle.width, rectangle.y + offset]);
 }
+const longSidesOf = rectangle => rectangle.width > rectangle.height ? ["top", "bottom"] : ["left", "right"];
 
-const WALKABLE = ["plaza", "hall", "escalator", "tunnel"];
-const ALL_OPEN = ["top", "bottom", "left", "right"];
-
-function generate(seedStr, opts) {
-  const rnd = mulberry32(hashSeed(seedStr));
+function generate(seedText, settings) {
+  const random = makeRandom(hashSeed(seedText));
   const grid = makeGrid();
   const pieces = [];
   const notes = [];
 
   // The mall is laid out around a vertical center line. Structural pieces
   // try to place as mirrored left/right pairs so the map reads symmetric,
-  // but a pair degrades to a single piece when the mirror spot is taken --
+  // but a pair degrades to a single piece when the mirror spot is taken:
   // close to symmetric, not rigidly so.
-  const OPPOSITE = { top: "bottom", bottom: "top", left: "right", right: "left" };
-  const mirrorSideName = s => s === "left" ? "right" : s === "right" ? "left" : s;
-  const mirrorDirName = d => d === "left" ? "right" : d === "right" ? "left" : d;
-  const mirrorX = p => GW - p.x - p.w;
-  function placePair(piece) {
-    const out = [place(grid, pieces, piece)];
-    const mx = mirrorX(piece);
-    if (mx !== piece.x && fits(grid, mx, piece.y, piece.w, piece.h)) {
-      out.push(place(grid, pieces, {
+  const mirrorSide = side => side === "left" ? "right" : side === "right" ? "left" : side;
+  const mirrorDirection = direction => direction === "left" ? "right" : direction === "right" ? "left" : direction;
+  const mirroredX = rectangle => GRID_WIDTH - rectangle.x - rectangle.width;
+  function placeMirroredPair(piece) {
+    const placed = [place(grid, pieces, piece)];
+    const mirrorX = mirroredX(piece);
+    if (mirrorX !== piece.x && fits(grid, mirrorX, piece.y, piece.width, piece.height)) {
+      placed.push(place(grid, pieces, {
         ...piece,
-        x: mx,
-        openSides: (piece.openSides || []).map(mirrorSideName),
-        dir: mirrorDirName(piece.dir),
+        x: mirrorX,
+        openSides: (piece.openSides || []).map(mirrorSide),
+        direction: mirrorDirection(piece.direction),
       }));
     }
-    return out;
+    return placed;
   }
 
-  // --- 1. plazas: 4x4, mirrored left/right, no more than 3 hallways apart ---
+  // --- 1. plazas: 4x4, mirrored left/right, 2 or 3 hallways apart ---
   // starter mall: fixed first-game layout (6 halls, big stores top/bottom only)
-  const hallsApart = opts.starter || opts.halls >= 6 ? 3 : 2;
-  const gap = hallsApart * 2;
-  const plazaY = 5; // rows 5-8
-  const startX = (GW - (8 + gap)) / 2;
-  const [plazaL, plazaR] = placePair({ type: "plaza", x: startX, y: plazaY, w: 4, h: 4, openSides: ALL_OPEN, depth: 0 });
+  const hallsApart = settings.starter || settings.halls >= 6 ? 3 : 2;
+  const corridorLength = hallsApart * 2;
+  const plazaTop = 5; // rows 5-8
+  const leftPlazaX = (GRID_WIDTH - (8 + corridorLength)) / 2;
+  const [leftPlaza, rightPlaza] = placeMirroredPair({
+    type: "plaza", x: leftPlazaX, y: plazaTop, width: 4, height: 4, openSides: ALL_SIDES, depth: 0,
+  });
 
   // --- 2. two corridors connect the plazas: top row and bottom row ---
-  const corridorRows = [plazaY, plazaY + 3];
+  const corridorRows = [plazaTop, plazaTop + 3];
   for (const row of corridorRows) {
-    for (let i = 0; i < hallsApart; i++) {
-      const x = plazaL.x + 4 + i * 2;
-      if (grid[row][x]) continue; // already filled by an earlier tile's mirror
-      placePair({ type: "hall", x, y: row, w: 2, h: 1, openSides: ALL_OPEN, depth: 0 });
+    for (let index = 0; index < hallsApart; index++) {
+      const x = leftPlaza.x + 4 + index * 2;
+      if (grid[row][x]) continue; // already filled by an earlier hall's mirror
+      placeMirroredPair({ type: "hall", x, y: row, width: 2, height: 1, openSides: ALL_SIDES, depth: 0 });
     }
   }
 
   // --- 3. big stores ---
   // starter mall: two per plaza, top and bottom. Otherwise they are placed
-  // once the halls exist, see below.
-  let bigStores = 0;
-  function placeBigStore(s) {
-    bigStores++;
-    place(grid, pieces, { type: "bigstore", x: s.x, y: s.y, w: s.w, h: s.h, openSides: [s.side], name: String(bigStores) });
+  // once the halls exist, see placeBigStores below.
+  let bigStoreCount = 0;
+  function placeBigStore(spot) {
+    bigStoreCount++;
+    place(grid, pieces, {
+      type: "bigstore", x: spot.x, y: spot.y, width: spot.width, height: spot.height,
+      openSides: [spot.side], name: String(bigStoreCount),
+    });
   }
-  if (opts.starter) {
-    for (const plaza of [plazaL, plazaR]) {
-      placeBigStore({ x: plaza.x, y: plaza.y - 2, w: 4, h: 2, side: "bottom" });
-      placeBigStore({ x: plaza.x, y: plaza.y + 4, w: 4, h: 2, side: "top" });
+  if (settings.starter) {
+    for (const plaza of [leftPlaza, rightPlaza]) {
+      placeBigStore({ x: plaza.x, y: plaza.y - 2, width: 4, height: 2, side: "bottom" });
+      placeBigStore({ x: plaza.x, y: plaza.y + 4, width: 4, height: 2, side: "top" });
     }
   }
 
-  // --- 4. escalators: prefer converting mirrored hallway pairs ---
+  // --- 4. escalators: made by converting halls ---
   // escalators may chain, but a chain all runs one way: a new escalator
   // takes the direction of any escalator it touches, and is skipped when
   // those disagree or run across it
-  let esc = 0;
+  let escalatorCount = 0;
   // empty cells past a spur escalator's end, kept for a tunnel
   const reservedForTunnels = [];
   // tunnels keep their distance from every other tunnel
   const TUNNEL_SPACING = 6;
-  const tooClose = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < TUNNEL_SPACING;
-  const overlapsReserved = r => reservedForTunnels.some(t =>
-    t.x >= r.x && t.x < r.x + r.w && t.y >= r.y && t.y < r.y + r.h);
-  const halls = () => pieces.filter(p => p.type === "hall" && p.w === 2);
-  const neighbours = h => ALL_OPEN.flatMap(side => sideCells(h, side))
-    .map(([cx, cy]) => (cx < 0 || cy < 0 || cx >= GW || cy >= GH) ? null : grid[cy][cx]);
-  const touchesPiece = (h, other) => neighbours(h).includes(other);
-  const runsAlong = (h, dir) => (h.w === 2) === (dir === "left" || dir === "right");
+  const tooCloseForTunnels = (first, second) =>
+    Math.abs(first.x - second.x) + Math.abs(first.y - second.y) < TUNNEL_SPACING;
+  const overlapsReserved = rectangle => reservedForTunnels.some(cell =>
+    cell.x >= rectangle.x && cell.x < rectangle.x + rectangle.width
+    && cell.y >= rectangle.y && cell.y < rectangle.y + rectangle.height);
+  const horizontalHalls = () => pieces.filter(piece => piece.type === "hall" && piece.width === 2);
+  const neighborPieces = piece => ALL_SIDES.flatMap(side => cellsOutside(piece, side))
+    .map(([cellX, cellY]) => pieceAt(grid, cellX, cellY));
+  const touchesPiece = (piece, other) => neighborPieces(piece).includes(other);
+  const runsAlong = (hall, direction) => (hall.width === 2) === (direction === "left" || direction === "right");
   // null: free choice; false: no legal direction; otherwise the required one
-  function forcedDir(h) {
-    const dirs = new Set(neighbours(h).filter(n => n && n.type === "escalator").map(n => n.dir));
-    if (!dirs.size) return null;
-    if (dirs.size > 1) return false;
-    const [dir] = dirs;
-    return runsAlong(h, dir) ? dir : false;
+  function forcedDirection(hall) {
+    const directions = new Set(neighborPieces(hall)
+      .filter(neighbor => neighbor && neighbor.type === "escalator")
+      .map(neighbor => neighbor.direction));
+    if (!directions.size) return null;
+    if (directions.size > 1) return false;
+    const [direction] = directions;
+    return runsAlong(hall, direction) ? direction : false;
   }
-  const randomDir = h => h.w === 2 ? (rnd() < 0.5 ? "right" : "left") : (rnd() < 0.5 ? "down" : "up");
-  function toEscalator(h, dir) {
-    h.type = "escalator";
-    h.dir = dir;
-    h.openSides = h.w === 2 ? ["left", "right"] : ["top", "bottom"];
+  const randomDirection = hall => hall.width === 2
+    ? (random() < 0.5 ? "right" : "left")
+    : (random() < 0.5 ? "down" : "up");
+  function turnIntoEscalator(hall, direction) {
+    hall.type = "escalator";
+    hall.direction = direction;
+    hall.openSides = hall.width === 2 ? ["left", "right"] : ["top", "bottom"];
   }
   // a mirrored pair runs in opposite directions, so a pair that touches
   // cannot chain; those halls are left to the single pass
-  function mirrorPair(h) {
-    return pieces.find(p => p !== h && p.type === "hall" && p.w === h.w && p.h === h.h && p.y === h.y && p.x === mirrorX(h));
+  function mirrorPartner(hall) {
+    return pieces.find(other => other !== hall && other.type === "hall"
+      && other.width === hall.width && other.height === hall.height
+      && other.y === hall.y && other.x === mirroredX(hall));
   }
   // corridor pairs mirror across the two corridor rows as well, so the
   // pair makes a loop around the middle instead of a trap in it
-  function loopPair(h) {
-    const otherRow = h.y === corridorRows[0] ? corridorRows[1] : corridorRows[0];
-    return pieces.find(p => p !== h && p.type === "hall" && p.w === 2 && p.y === otherRow && p.x === mirrorX(h));
+  function loopPartner(hall) {
+    const otherRow = hall.y === corridorRows[0] ? corridorRows[1] : corridorRows[0];
+    return pieces.find(other => other !== hall && other.type === "hall"
+      && other.width === 2 && other.y === otherRow && other.x === mirroredX(hall));
   }
-  function convertPair(h, m, dir) {
-    if (touchesPiece(h, m)) return false;
-    const fh = forcedDir(h), fm = forcedDir(m);
-    if (fh === false || fm === false) return false;
-    dir = fh || (fm ? mirrorDirName(fm) : dir);
-    if (fm && fm !== mirrorDirName(dir)) return false;
-    toEscalator(h, dir);
-    toEscalator(m, mirrorDirName(dir));
+  function convertPair(hall, partner, direction) {
+    if (touchesPiece(hall, partner)) return false;
+    const forcedForHall = forcedDirection(hall);
+    const forcedForPartner = forcedDirection(partner);
+    if (forcedForHall === false || forcedForPartner === false) return false;
+    direction = forcedForHall || (forcedForPartner ? mirrorDirection(forcedForPartner) : direction);
+    if (forcedForPartner && forcedForPartner !== mirrorDirection(direction)) return false;
+    turnIntoEscalator(hall, direction);
+    turnIntoEscalator(partner, mirrorDirection(direction));
     return true;
   }
-  for (const h of shuffle(halls(), rnd)) {
-    if (esc + 2 > opts.escalators) break;
-    if (h.type !== "hall") continue;
-    const m = loopPair(h);
-    if (m && convertPair(h, m, randomDir(h))) esc += 2;
+  for (const hall of shuffle(horizontalHalls(), random)) {
+    if (escalatorCount + 2 > settings.escalators) break;
+    if (hall.type !== "hall") continue;
+    const partner = loopPartner(hall);
+    if (partner && convertPair(hall, partner, randomDirection(hall))) escalatorCount += 2;
   }
-  for (const h of shuffle(halls(), rnd)) {
-    if (esc >= opts.escalators) break;
-    const forced = forcedDir(h);
+  for (const hall of shuffle(horizontalHalls(), random)) {
+    if (escalatorCount >= settings.escalators) break;
+    const forced = forcedDirection(hall);
     if (forced === false) continue;
-    toEscalator(h, forced || randomDir(h));
-    esc++;
+    turnIntoEscalator(hall, forced || randomDirection(hall));
+    escalatorCount++;
   }
 
   // a big store's door edge is 4 cells long and must sit either on a plaza
   // or across exactly two end-to-end halls, corridor or spur
   function legalBigStoreSpots() {
     const spots = [];
-    const seen = new Set();
-    const consider = (x, y, w, h, side) => {
-      const key = [x, y, w, h, side].join();
-      if (seen.has(key)) return;
-      seen.add(key);
-      if (!fits(grid, x, y, w, h) || overlapsReserved({ x, y, w, h })) return;
-      const hosts = sideCells({ x, y, w, h }, side)
-        .map(([cx, cy]) => cellIs(grid, cx, cy, ["plaza", "hall"]) ? grid[cy][cx] : null);
+    const seenKeys = new Set();
+    const consider = (x, y, width, height, side) => {
+      const key = [x, y, width, height, side].join();
+      if (seenKeys.has(key)) return;
+      seenKeys.add(key);
+      if (!fits(grid, x, y, width, height) || overlapsReserved({ x, y, width, height })) return;
+      const hosts = cellsOutside({ x, y, width, height }, side)
+        .map(([cellX, cellY]) => cellIs(grid, cellX, cellY, ["plaza", "hall"]) ? grid[cellY][cellX] : null);
       if (hosts.includes(null)) return;
-      const distinct = new Set(hosts).size;
-      const onPlaza = distinct === 1 && hosts[0].type === "plaza";
-      const onTwoHalls = !opts.lockBigStores && distinct === 2 && hosts.every(p => p.type === "hall");
-      if (onPlaza || onTwoHalls) spots.push({ x, y, w, h, side });
+      const distinctHosts = new Set(hosts).size;
+      const onPlaza = distinctHosts === 1 && hosts[0].type === "plaza";
+      const onTwoHalls = !settings.lockBigStores && distinctHosts === 2 && hosts.every(host => host.type === "hall");
+      if (onPlaza || onTwoHalls) spots.push({ x, y, width, height, side });
     };
-    for (const pc of pieces) {
-      if (pc.type !== "plaza" && pc.type !== "hall") continue;
-      for (let x = pc.x - 3; x < pc.x + pc.w; x++) {
-        consider(x, pc.y - 2, 4, 2, "bottom");
-        consider(x, pc.y + pc.h, 4, 2, "top");
+    for (const piece of pieces) {
+      if (piece.type !== "plaza" && piece.type !== "hall") continue;
+      for (let x = piece.x - 3; x < piece.x + piece.width; x++) {
+        consider(x, piece.y - 2, 4, 2, "bottom");
+        consider(x, piece.y + piece.height, 4, 2, "top");
       }
-      for (let y = pc.y - 3; y < pc.y + pc.h; y++) {
-        consider(pc.x - 2, y, 2, 4, "right");
-        consider(pc.x + pc.w, y, 2, 4, "left");
+      for (let y = piece.y - 3; y < piece.y + piece.height; y++) {
+        consider(piece.x - 2, y, 2, 4, "right");
+        consider(piece.x + piece.width, y, 2, 4, "left");
       }
     }
     return spots;
@@ -323,54 +358,50 @@ function generate(seedStr, opts) {
   // Locked to the plazas, this runs before any spur can take a plaza side;
   // otherwise it waits until the halls and escalators exist.
   function placeBigStores() {
-    let bigGuard = 0;
-    while (bigStores < 4 && bigGuard++ < 20) {
-      const spots = shuffle(legalBigStoreSpots(), rnd);
+    let attempts = 0;
+    while (bigStoreCount < 4 && attempts++ < 20) {
+      const spots = shuffle(legalBigStoreSpots(), random);
       if (!spots.length) break;
-      const s = spots[0];
-      placeBigStore(s);
-      if (bigStores >= 4) break;
-      const mirror = { x: mirrorX(s), y: s.y, w: s.w, h: s.h, side: mirrorSideName(s.side) };
-      const key = t => [t.x, t.y, t.w, t.h, t.side].join();
-      if (legalBigStoreSpots().some(t => key(t) === key(mirror))) placeBigStore(mirror);
+      const spot = spots[0];
+      placeBigStore(spot);
+      if (bigStoreCount >= 4) break;
+      const mirrorSpot = { x: mirroredX(spot), y: spot.y, width: spot.width, height: spot.height, side: mirrorSide(spot.side) };
+      const spotKey = candidate => [candidate.x, candidate.y, candidate.width, candidate.height, candidate.side].join();
+      if (legalBigStoreSpots().some(candidate => spotKey(candidate) === spotKey(mirrorSpot))) placeBigStore(mirrorSpot);
     }
-    if (bigStores < 4) notes.push("Only " + plural(bigStores, "big store") + " fit.");
+    if (bigStoreCount < 4) notes.push("Only " + plural(bigStoreCount, "big store") + " fit.");
   }
 
   // --- 5. security + stores: 2x1, blue long side flush to hallway or plaza ---
-  function doorTouches(s) {
-    // every cell of the blue edge must touch hallway or plaza (not an escalator side wall)
-    const t = ["hall", "plaza"];
-    if (s.side === "bottom") return cellIs(grid, s.x, s.y + 1, t) && cellIs(grid, s.x + 1, s.y + 1, t);
-    if (s.side === "top")    return cellIs(grid, s.x, s.y - 1, t) && cellIs(grid, s.x + 1, s.y - 1, t);
-    if (s.side === "right")  return cellIs(grid, s.x + 1, s.y, t) && cellIs(grid, s.x + 1, s.y + 1, t);
-    if (s.side === "left")   return cellIs(grid, s.x - 1, s.y, t) && cellIs(grid, s.x - 1, s.y + 1, t);
-    return false;
+  // every cell of the blue edge must touch a hall or plaza (not an escalator side wall)
+  function doorTouchesWalkway(spot) {
+    return cellsOutside(spot, spot.side).every(([cellX, cellY]) => cellIs(grid, cellX, cellY, ["hall", "plaza"]));
   }
 
   function legalStoreSpots() {
     const spots = [];
-    for (const pc of pieces) {
-      if (pc.type === "hall") {
-        if (pc.w === 2) {
-          spots.push({ x: pc.x, y: pc.y - 1, w: 2, h: 1, side: "bottom", host: pc });
-          spots.push({ x: pc.x, y: pc.y + 1, w: 2, h: 1, side: "top", host: pc });
+    for (const piece of pieces) {
+      if (piece.type === "hall") {
+        if (piece.width === 2) {
+          spots.push({ x: piece.x, y: piece.y - 1, width: 2, height: 1, side: "bottom", host: piece });
+          spots.push({ x: piece.x, y: piece.y + 1, width: 2, height: 1, side: "top", host: piece });
         } else {
-          spots.push({ x: pc.x - 1, y: pc.y, w: 1, h: 2, side: "right", host: pc });
-          spots.push({ x: pc.x + 1, y: pc.y, w: 1, h: 2, side: "left", host: pc });
+          spots.push({ x: piece.x - 1, y: piece.y, width: 1, height: 2, side: "right", host: piece });
+          spots.push({ x: piece.x + 1, y: piece.y, width: 1, height: 2, side: "left", host: piece });
         }
-      } else if (pc.type === "plaza") {
-        for (let x = pc.x; x <= pc.x + 2; x++) {
-          spots.push({ x, y: pc.y - 1, w: 2, h: 1, side: "bottom", host: pc });
-          spots.push({ x, y: pc.y + 4, w: 2, h: 1, side: "top", host: pc });
+      } else if (piece.type === "plaza") {
+        for (let x = piece.x; x <= piece.x + 2; x++) {
+          spots.push({ x, y: piece.y - 1, width: 2, height: 1, side: "bottom", host: piece });
+          spots.push({ x, y: piece.y + 4, width: 2, height: 1, side: "top", host: piece });
         }
-        for (let y = pc.y; y <= pc.y + 2; y++) {
-          spots.push({ x: pc.x - 1, y, w: 1, h: 2, side: "right", host: pc });
-          spots.push({ x: pc.x + 4, y, w: 1, h: 2, side: "left", host: pc });
+        for (let y = piece.y; y <= piece.y + 2; y++) {
+          spots.push({ x: piece.x - 1, y, width: 1, height: 2, side: "right", host: piece });
+          spots.push({ x: piece.x + 4, y, width: 1, height: 2, side: "left", host: piece });
         }
       }
     }
-    return spots.filter(s => fits(grid, s.x, s.y, s.w, s.h) && doorTouches(s) && !overlapsReserved(s));
+    return spots.filter(spot => fits(grid, spot.x, spot.y, spot.width, spot.height)
+      && doorTouchesWalkway(spot) && !overlapsReserved(spot));
   }
 
   // hall-to-hall connection rules:
@@ -379,35 +410,27 @@ function generate(seedStr, opts) {
   //  - at most one hall may connect along any hall's long side
   //  - a hall meets a plaza with its short end only; lying along the plaza
   //    edge just eats storefronts
-  const isHallLike = p => !!p && (p.type === "hall" || p.type === "escalator");
-  function sideCells(r, side) {
-    if (side === "top")    return Array.from({ length: r.w }, (_, i) => [r.x + i, r.y - 1]);
-    if (side === "bottom") return Array.from({ length: r.w }, (_, i) => [r.x + i, r.y + r.h]);
-    if (side === "left")   return Array.from({ length: r.h }, (_, i) => [r.x - 1, r.y + i]);
-    return Array.from({ length: r.h }, (_, i) => [r.x + r.w, r.y + i]);
-  }
-  const longSidesOf = r => r.w > r.h ? ["top", "bottom"] : ["left", "right"];
-  function hallPlacementOK(cand) {
-    const longH = longSidesOf(cand);
-    for (const side of ALL_OPEN) {
+  const isHallLike = piece => !!piece && (piece.type === "hall" || piece.type === "escalator");
+  function hallPlacementAllowed(candidate) {
+    const candidateLongSides = longSidesOf(candidate);
+    for (const side of ALL_SIDES) {
       const touching = new Set();
-      for (const [cx, cy] of sideCells(cand, side)) {
-        if (cx < 0 || cy < 0 || cx >= GW || cy >= GH) continue;
-        if (isHallLike(grid[cy][cx])) touching.add(grid[cy][cx]);
+      for (const [cellX, cellY] of cellsOutside(candidate, side)) {
+        const neighbor = pieceAt(grid, cellX, cellY);
+        if (isHallLike(neighbor)) touching.add(neighbor);
       }
-      const isLongH = longH.includes(side);
-      if (isLongH && sideCells(cand, side).some(([cx, cy]) => cellIs(grid, cx, cy, ["plaza"]))) return false;
+      const onLongSide = candidateLongSides.includes(side);
+      if (onLongSide && cellsOutside(candidate, side).some(([cellX, cellY]) => cellIs(grid, cellX, cellY, ["plaza"]))) return false;
       if (!touching.size) continue;
-      if (isLongH && touching.size > 1) return false;
-      for (const n of touching) {
-        const isLongN = longSidesOf(n).includes(OPPOSITE[side]);
-        if (isLongH && isLongN) return false;
-        if (isLongN) {
-          // the candidate would join n's long side: that side must be empty of halls
-          for (const [cx, cy] of sideCells(n, OPPOSITE[side])) {
-            if (cx < 0 || cy < 0 || cx >= GW || cy >= GH) continue;
-            const o = grid[cy][cx];
-            if (o && o !== n && isHallLike(o)) return false;
+      if (onLongSide && touching.size > 1) return false;
+      for (const neighbor of touching) {
+        const onNeighborLongSide = longSidesOf(neighbor).includes(OPPOSITE_SIDE[side]);
+        if (onLongSide && onNeighborLongSide) return false;
+        if (onNeighborLongSide) {
+          // the candidate would join the neighbor's long side: that side must be empty of halls
+          for (const [cellX, cellY] of cellsOutside(neighbor, OPPOSITE_SIDE[side])) {
+            const other = pieceAt(grid, cellX, cellY);
+            if (other && other !== neighbor && isHallLike(other)) return false;
           }
         }
       }
@@ -420,263 +443,284 @@ function generate(seedStr, opts) {
   // or null when it connects to nothing. The core is depth 0: the plazas and
   // the corridor halls between them, including any turned into escalators.
   const CONNECTORS = ["hall", "plaza", "escalator"];
-  function spurDepth(cand) {
+  function depthIfPlaced(candidate) {
     let depth = null;
-    for (const side of ALL_OPEN)
-      for (const [cx, cy] of sideCells(cand, side)) {
-        if (!cellIs(grid, cx, cy, CONNECTORS)) continue;
-        const n = grid[cy][cx];
-        if (!(n.openSides || []).includes(OPPOSITE[side])) continue;
-        if (depth === null || n.depth + 1 < depth) depth = n.depth + 1;
+    for (const side of ALL_SIDES)
+      for (const [cellX, cellY] of cellsOutside(candidate, side)) {
+        if (!cellIs(grid, cellX, cellY, CONNECTORS)) continue;
+        const neighbor = grid[cellY][cellX];
+        if (!(neighbor.openSides || []).includes(OPPOSITE_SIDE[side])) continue;
+        if (depth === null || neighbor.depth + 1 < depth) depth = neighbor.depth + 1;
       }
     return depth;
   }
 
-  // grow a hallway spur (mirrored when the mirror spot is free, so the
+  // grow one hallway spur (mirrored when the mirror spot is free, so the
   // skeleton stays near-symmetric)
-  function addSpur(maxHalls) {
-    const cands = [];
-    for (const pc of pieces) {
-      if (!CONNECTORS.includes(pc.type)) continue;
-      for (let x = pc.x; x < pc.x + pc.w; x++) {
-        cands.push({ x, y: pc.y - 2, w: 1, h: 2 });
-        cands.push({ x, y: pc.y + pc.h, w: 1, h: 2 });
+  function growSpur(maxHalls) {
+    const candidates = [];
+    for (const piece of pieces) {
+      if (!CONNECTORS.includes(piece.type)) continue;
+      for (let x = piece.x; x < piece.x + piece.width; x++) {
+        candidates.push({ x, y: piece.y - 2, width: 1, height: 2 });
+        candidates.push({ x, y: piece.y + piece.height, width: 1, height: 2 });
       }
-      for (let y = pc.y; y < pc.y + pc.h; y++) {
-        cands.push({ x: pc.x - 2, y, w: 2, h: 1 });
-        cands.push({ x: pc.x + pc.w, y, w: 2, h: 1 });
+      for (let y = piece.y; y < piece.y + piece.height; y++) {
+        candidates.push({ x: piece.x - 2, y, width: 2, height: 1 });
+        candidates.push({ x: piece.x + piece.width, y, width: 2, height: 1 });
       }
     }
-    shuffle(cands, rnd);
-    for (const c of cands) {
-      if (!fits(grid, c.x, c.y, c.w, c.h)) continue;
-      const depth = spurDepth(c);
-      if (depth === null || !hallPlacementOK(c)) continue;
-      place(grid, pieces, { type: "hall", x: c.x, y: c.y, w: c.w, h: c.h, openSides: ALL_OPEN, depth });
+    shuffle(candidates, random);
+    for (const candidate of candidates) {
+      if (!fits(grid, candidate.x, candidate.y, candidate.width, candidate.height)) continue;
+      const depth = depthIfPlaced(candidate);
+      if (depth === null || !hallPlacementAllowed(candidate)) continue;
+      place(grid, pieces, { type: "hall", ...candidate, openSides: ALL_SIDES, depth });
       // mirror the spur when the mirrored spot is free and also legal
-      const m = { x: mirrorX(c), y: c.y, w: c.w, h: c.h };
-      const mirrorDepth = spurDepth(m);
-      const roomToMirror = hallCount() < maxHalls;
-      if (roomToMirror && m.x !== c.x && fits(grid, m.x, m.y, m.w, m.h) && mirrorDepth !== null && hallPlacementOK(m)) {
-        place(grid, pieces, { type: "hall", x: m.x, y: m.y, w: m.w, h: m.h, openSides: ALL_OPEN, depth: mirrorDepth });
+      const mirrorCandidate = { x: mirroredX(candidate), y: candidate.y, width: candidate.width, height: candidate.height };
+      const mirrorDepth = depthIfPlaced(mirrorCandidate);
+      const roomToMirror = countHalls() < maxHalls;
+      if (roomToMirror && mirrorCandidate.x !== candidate.x
+          && fits(grid, mirrorCandidate.x, mirrorCandidate.y, mirrorCandidate.width, mirrorCandidate.height)
+          && mirrorDepth !== null && hallPlacementAllowed(mirrorCandidate)) {
+        place(grid, pieces, { type: "hall", ...mirrorCandidate, openSides: ALL_SIDES, depth: mirrorDepth });
       }
       return true;
     }
     return false;
   }
 
-  const hallCount = () => pieces.filter(isHallLike).length;
+  const countHalls = () => pieces.filter(isHallLike).length;
 
   // grow the skeleton to exactly the requested hall count and stop there;
   // the caller raises the count and retries when stores do not fit
   // (starter mall never grows: exactly the 6 corridor halls)
-  if (opts.lockBigStores) placeBigStores();
-  let growGuard = 0;
-  while (!opts.starter && hallCount() < opts.halls && growGuard++ < 80) {
-    if (!addSpur(opts.halls)) break;
+  if (settings.lockBigStores) placeBigStores();
+  let growAttempts = 0;
+  while (!settings.starter && countHalls() < settings.halls && growAttempts++ < 80) {
+    if (!growSpur(settings.halls)) break;
   }
 
   // more escalators than corridor halls: turn spur halls into escalators,
   // but only ones with nothing hall-like on their long sides, so closing
   // those sides cannot cut a hall off
-  const longSidesClear = h => longSidesOf(h).every(side =>
-    sideCells(h, side).every(([cx, cy]) => !cellIs(grid, cx, cy, ["hall", "escalator"])));
+  const longSidesClear = hall => longSidesOf(hall).every(side =>
+    cellsOutside(hall, side).every(([cellX, cellY]) => !cellIs(grid, cellX, cellY, ["hall", "escalator"])));
   // both ends of an escalator must lead somewhere: a hall, plaza, or
   // escalator with an open facing edge, or a tunnel placed later. An empty
   // end cell is reserved for a tunnel while the tunnel budget lasts.
-  const endsOf = h => h.w === 2 ? ["left", "right"] : ["top", "bottom"];
-  const tunnelBudget = () => 2 * Math.min(opts.tunnelPairs, 3) - reservedForTunnels.length;
-  function endState(h, side) {
-    const [[cx, cy]] = sideCells(h, side);
-    if (cx < 0 || cy < 0 || cx >= GW || cy >= GH) return "blocked";
-    const n = grid[cy][cx];
-    if (!n) return "free";
-    return CONNECTORS.includes(n.type) && (n.openSides || []).includes(OPPOSITE[side]) ? "linked" : "blocked";
+  const openEndsOf = hall => hall.width === 2 ? ["left", "right"] : ["top", "bottom"];
+  const tunnelBudget = () => 2 * Math.min(settings.tunnelPairs, 3) - reservedForTunnels.length;
+  // "linked" leads somewhere, "free" is an empty cell, "blocked" can never lead anywhere
+  function endState(hall, side) {
+    const [[cellX, cellY]] = cellsOutside(hall, side);
+    if (!inBounds(cellX, cellY)) return "blocked";
+    const neighbor = grid[cellY][cellX];
+    if (!neighbor) return "free";
+    const leadsOn = CONNECTORS.includes(neighbor.type) && (neighbor.openSides || []).includes(OPPOSITE_SIDE[side]);
+    return leadsOn ? "linked" : "blocked";
   }
   // number of ends needing a tunnel, or -1 when an end can never lead anywhere
-  function freeEnds(h) {
-    const states = endsOf(h).map(side => endState(h, side));
+  function endsNeedingTunnel(hall) {
+    const states = openEndsOf(hall).map(side => endState(hall, side));
     if (states.includes("blocked")) return -1;
-    for (const side of endsOf(h)) {
-      if (endState(h, side) !== "free") continue;
-      const [[cx, cy]] = sideCells(h, side);
-      if (reservedForTunnels.some(t => tooClose(t, { x: cx, y: cy }))) return -1;
+    for (const side of openEndsOf(hall)) {
+      if (endState(hall, side) !== "free") continue;
+      const [[cellX, cellY]] = cellsOutside(hall, side);
+      if (reservedForTunnels.some(cell => tooCloseForTunnels(cell, { x: cellX, y: cellY }))) return -1;
     }
-    return states.filter(st => st === "free").length;
+    return states.filter(state => state === "free").length;
   }
-  function reserveEnds(h) {
-    for (const side of endsOf(h)) {
-      if (endState(h, side) !== "free") continue;
-      const [[cx, cy]] = sideCells(h, side);
-      reservedForTunnels.push({ x: cx, y: cy, side: OPPOSITE[side] });
+  function reserveEnds(hall) {
+    for (const side of openEndsOf(hall)) {
+      if (endState(hall, side) !== "free") continue;
+      const [[cellX, cellY]] = cellsOutside(hall, side);
+      reservedForTunnels.push({ x: cellX, y: cellY, side: OPPOSITE_SIDE[side] });
     }
   }
-  for (const h of shuffle(pieces.filter(p => p.type === "hall" && p.depth > 0), rnd)) {
-    if (esc >= opts.escalators) break;
-    if (h.type !== "hall" || !longSidesClear(h)) continue;
-    const freeH = freeEnds(h);
-    if (freeH < 0 || freeH > tunnelBudget()) continue;
-    const m = mirrorPair(h);
-    const freeM = m ? freeEnds(m) : -1;
-    if (m && esc + 2 <= opts.escalators && longSidesClear(m) && freeM >= 0
-        && freeH + freeM <= tunnelBudget() && convertPair(h, m, randomDir(h))) {
-      reserveEnds(h);
-      reserveEnds(m);
-      esc += 2;
+  for (const hall of shuffle(pieces.filter(piece => piece.type === "hall" && piece.depth > 0), random)) {
+    if (escalatorCount >= settings.escalators) break;
+    if (hall.type !== "hall" || !longSidesClear(hall)) continue;
+    const hallFreeEnds = endsNeedingTunnel(hall);
+    if (hallFreeEnds < 0 || hallFreeEnds > tunnelBudget()) continue;
+    const partner = mirrorPartner(hall);
+    const partnerFreeEnds = partner ? endsNeedingTunnel(partner) : -1;
+    if (partner && escalatorCount + 2 <= settings.escalators && longSidesClear(partner) && partnerFreeEnds >= 0
+        && hallFreeEnds + partnerFreeEnds <= tunnelBudget() && convertPair(hall, partner, randomDirection(hall))) {
+      reserveEnds(hall);
+      reserveEnds(partner);
+      escalatorCount += 2;
       continue;
     }
-    const forced = forcedDir(h);
+    const forced = forcedDirection(hall);
     if (forced === false) continue;
-    toEscalator(h, forced || randomDir(h));
-    reserveEnds(h);
-    esc++;
+    turnIntoEscalator(hall, forced || randomDirection(hall));
+    reserveEnds(hall);
+    escalatorCount++;
   }
 
+  if (!settings.starter && !settings.lockBigStores) placeBigStores();
 
-  if (!opts.starter && !opts.lockBigStores) placeBigStores();
-
-  const ROOMS = ["store", "security", "bigstore"];
-  const hasRoom = h => ALL_OPEN.some(side =>
-    sideCells(h, side).some(([cx, cy]) => cellIs(grid, cx, cy, ROOMS)));
+  const ROOM_TYPES = ["store", "security", "bigstore"];
+  const hasStorefront = hall => ALL_SIDES.some(side =>
+    cellsOutside(hall, side).some(([cellX, cellY]) => cellIs(grid, cellX, cellY, ROOM_TYPES)));
   // fill from the core outward; at the same depth a hall with no storefront
   // yet comes before one that already has one
-  const spotRank = s => s.host.depth * 2 + (s.host.type === "hall" && !hasRoom(s.host) ? 0 : 1);
+  const storeSpotRank = spot => spot.host.depth * 2 + (spot.host.type === "hall" && !hasStorefront(spot.host) ? 0 : 1);
 
-  let stores = 0, security = 0, guard = 0;
-  while ((stores < opts.stores || security < 1) && guard++ < 300) {
-    const spots = shuffle(legalStoreSpots(), rnd).sort((a, b) => spotRank(a) - spotRank(b));
+  let storeCount = 0, securityCount = 0, storeAttempts = 0;
+  while ((storeCount < settings.stores || securityCount < 1) && storeAttempts++ < 300) {
+    const spots = shuffle(legalStoreSpots(), random).sort((first, second) => storeSpotRank(first) - storeSpotRank(second));
     if (!spots.length) break;
-    const s = spots[0];
-    if (security < 1) {
-      place(grid, pieces, { type: "security", x: s.x, y: s.y, w: s.w, h: s.h, openSides: [s.side], name: "SECURITY" });
-      security++;
-    } else if (stores + 1 < opts.stores) {
+    const spot = spots[0];
+    if (securityCount < 1) {
+      place(grid, pieces, {
+        type: "security", x: spot.x, y: spot.y, width: spot.width, height: spot.height,
+        openSides: [spot.side], name: "SECURITY",
+      });
+      securityCount++;
+    } else if (storeCount + 1 < settings.stores) {
       // room for two: mirror the store when the mirrored spot is also legal
-      const placed = placePair({ type: "store", x: s.x, y: s.y, w: s.w, h: s.h, openSides: [s.side] });
+      const placed = placeMirroredPair({
+        type: "store", x: spot.x, y: spot.y, width: spot.width, height: spot.height, openSides: [spot.side],
+      });
       const twin = placed[1];
-      if (twin && (overlapsReserved(twin) || !doorTouches({ x: twin.x, y: twin.y, w: twin.w, h: twin.h, side: twin.openSides[0] }))) {
+      if (twin && (overlapsReserved(twin) || !doorTouchesWalkway({ ...twin, side: twin.openSides[0] }))) {
         // mirror landed against something that is not a storefront; undo it
-        for (let yy = twin.y; yy < twin.y + twin.h; yy++)
-          for (let xx = twin.x; xx < twin.x + twin.w; xx++)
-            grid[yy][xx] = null;
+        for (let row = twin.y; row < twin.y + twin.height; row++)
+          for (let column = twin.x; column < twin.x + twin.width; column++)
+            grid[row][column] = null;
         pieces.splice(pieces.indexOf(twin), 1);
         placed.pop();
       }
-      stores += placed.length;
+      storeCount += placed.length;
     } else {
-      place(grid, pieces, { type: "store", x: s.x, y: s.y, w: s.w, h: s.h, openSides: [s.side] });
-      stores++;
+      place(grid, pieces, {
+        type: "store", x: spot.x, y: spot.y, width: spot.width, height: spot.height, openSides: [spot.side],
+      });
+      storeCount++;
     }
   }
-  if (stores < opts.stores) notes.push("Board full: placed " + stores + " of " + opts.stores + " stores.");
-  if (!opts.starter && hallCount() < opts.halls)
-    notes.push("Only " + hallCount() + " of " + opts.halls + " halls fit.");
+  if (storeCount < settings.stores) notes.push("Board full: placed " + storeCount + " of " + settings.stores + " stores.");
+  if (!settings.starter && countHalls() < settings.halls)
+    notes.push("Only " + countHalls() + " of " + settings.halls + " halls fit.");
 
   // every hall must have a storefront on it
-  const emptyHalls = pieces.filter(p => p.type === "hall" && !hasRoom(p)).length;
+  const emptyHalls = pieces.filter(piece => piece.type === "hall" && !hasStorefront(piece)).length;
   if (emptyHalls) notes.push(plural(emptyHalls, "hall") + " with no store.");
 
   // --- 6. access tunnels: lettered pairs A/B/C, mirrored when possible ---
-  const tunnels = () => pieces.filter(p => p.type === "tunnel");
-  function tunnelSpotsNow() {
+  const placedTunnels = () => pieces.filter(piece => piece.type === "tunnel");
+  // empty cells whose one open edge would face the open edge of a walkable piece
+  function tunnelSpots() {
     const spots = [];
-    for (let y = 0; y < GH; y++)
-      for (let x = 0; x < GW; x++) {
+    for (let y = 0; y < GRID_HEIGHT; y++)
+      for (let x = 0; x < GRID_WIDTH; x++) {
         if (grid[y][x]) continue;
-        if (tunnels().some(t => tooClose(t, { x, y }))) continue;
-        for (const [dx, dy, side] of [[1,0,"right"],[-1,0,"left"],[0,1,"bottom"],[0,-1,"top"]]) {
-          const nx = x + dx, ny = y + dy;
-          if (!cellIs(grid, nx, ny, WALKABLE)) continue;
+        if (placedTunnels().some(tunnel => tooCloseForTunnels(tunnel, { x, y }))) continue;
+        for (const [stepX, stepY, side] of [[1, 0, "right"], [-1, 0, "left"], [0, 1, "bottom"], [0, -1, "top"]]) {
+          const neighborX = x + stepX, neighborY = y + stepY;
+          if (!cellIs(grid, neighborX, neighborY, WALKABLE)) continue;
           // the neighbor's facing edge must be open (blue), not a wall
-          const n = grid[ny][nx];
-          if (!(n.openSides || []).includes(OPPOSITE[side])) continue;
+          const neighbor = grid[neighborY][neighborX];
+          if (!(neighbor.openSides || []).includes(OPPOSITE_SIDE[side])) continue;
           spots.push({ x, y, side });
           break;
         }
       }
     return spots;
   }
-  const pairsWanted = Math.min(opts.tunnelPairs, 3);
-  let tunnelPairs = 0;
-  const placeTunnel = (t, label) =>
-    place(grid, pieces, { type: "tunnel", x: t.x, y: t.y, w: 1, h: 1, openSides: [t.side], name: label });
+  const pairsWanted = Math.min(settings.tunnelPairs, 3);
+  let tunnelPairCount = 0;
+  const placeTunnel = (spot, label) =>
+    place(grid, pieces, { type: "tunnel", x: spot.x, y: spot.y, width: 1, height: 1, openSides: [spot.side], name: label });
   // escalator ends waiting for a tunnel are served before random spots
-  const required = reservedForTunnels.filter(t => !grid[t.y][t.x]);
-  while (tunnelPairs < pairsWanted) {
-    const spots = shuffle(tunnelSpotsNow(), rnd);
+  const waitingEnds = reservedForTunnels.filter(cell => !grid[cell.y][cell.x]);
+  while (tunnelPairCount < pairsWanted) {
+    const spots = shuffle(tunnelSpots(), random);
     if (spots.length < 2) break;
-    const label = "ABC"[tunnelPairs];
-    const a = required.shift() || spots[0];
-    if (tunnels().some(t => tooClose(t, a))) break;
-    placeTunnel(a, label);
+    const label = "ABC"[tunnelPairCount];
+    const firstSpot = waitingEnds.shift() || spots[0];
+    if (placedTunnels().some(tunnel => tooCloseForTunnels(tunnel, firstSpot))) break;
+    placeTunnel(firstSpot, label);
     // partner: another waiting escalator end, else the mirrored spot, else
     // any legal spot
-    const rest = tunnelSpotsNow();
-    const waiting = required.find(t => !tunnels().some(u => tooClose(u, t)));
-    const mirror = rest.find(t => t.x === GW - a.x - 1 && t.y === a.y);
-    const b = waiting || mirror || shuffle(rest, rnd)[0];
-    if (!b) {
+    const otherSpots = tunnelSpots();
+    const waitingPartner = waitingEnds.find(cell => !placedTunnels().some(tunnel => tooCloseForTunnels(tunnel, cell)));
+    const mirrorSpot = otherSpots.find(spot => spot.x === GRID_WIDTH - firstSpot.x - 1 && spot.y === firstSpot.y);
+    const partnerSpot = waitingPartner || mirrorSpot || shuffle(otherSpots, random)[0];
+    if (!partnerSpot) {
       // no home for the partner; take the first tunnel back off the board
       const orphan = pieces.pop();
       grid[orphan.y][orphan.x] = null;
       break;
     }
-    placeTunnel(b, label);
-    if (waiting) required.splice(required.indexOf(waiting), 1);
-    tunnelPairs++;
+    placeTunnel(partnerSpot, label);
+    if (waitingPartner) waitingEnds.splice(waitingEnds.indexOf(waitingPartner), 1);
+    tunnelPairCount++;
   }
 
   // escalator ends that still lead nowhere
-  const leadsSomewhere = (e, side) => {
-    const [[cx, cy]] = sideCells(e, side);
-    if (cx < 0 || cy < 0 || cx >= GW || cy >= GH) return false;
-    const n = grid[cy][cx];
-    return !!n && (CONNECTORS.includes(n.type) || n.type === "tunnel") && (n.openSides || []).includes(OPPOSITE[side]);
+  const leadsSomewhere = (escalator, side) => {
+    const [[cellX, cellY]] = cellsOutside(escalator, side);
+    const neighbor = pieceAt(grid, cellX, cellY);
+    return !!neighbor && (CONNECTORS.includes(neighbor.type) || neighbor.type === "tunnel")
+      && (neighbor.openSides || []).includes(OPPOSITE_SIDE[side]);
   };
-  const unusedEscalatorEnds = pieces.filter(p => p.type === "escalator")
-    .reduce((n, e) => n + endsOf(e).filter(side => !leadsSomewhere(e, side)).length, 0);
+  const unusedEscalatorEnds = pieces.filter(piece => piece.type === "escalator")
+    .reduce((total, escalator) => total + openEndsOf(escalator).filter(side => !leadsSomewhere(escalator, side)).length, 0);
   if (unusedEscalatorEnds) notes.push(plural(unusedEscalatorEnds, "escalator end") + " leading nowhere.");
 
   // every room and walkable piece must reach every other, walking
   // escalators only in their arrow direction and tunnels twin to twin
-  const WALK = ["plaza", "hall", "escalator", "tunnel", "store", "bigstore", "security"];
-  const nodes = pieces.filter(p => WALK.includes(p.type));
-  const canLeave = (p, side) => p.type !== "escalator" || side === p.dir;
-  const canEnter = (p, side) => p.type !== "escalator" || side === OPPOSITE[p.dir];
-  const exits = new Map(nodes.map(p => [p, []]));
-  for (const p of nodes) {
-    for (const side of p.openSides || []) {
-      if (!canLeave(p, side)) continue;
-      for (const [cx, cy] of sideCells(p, side)) {
-        if (cx < 0 || cy < 0 || cx >= GW || cy >= GH) continue;
-        const n = grid[cy][cx];
-        if (!n || n === p || !exits.has(n)) continue;
-        if (!(n.openSides || []).includes(OPPOSITE[side]) || !canEnter(n, OPPOSITE[side])) continue;
-        exits.get(p).push(n);
+  const WALKABLE_OR_ROOM = ["plaza", "hall", "escalator", "tunnel", "store", "bigstore", "security"];
+  const nodes = pieces.filter(piece => WALKABLE_OR_ROOM.includes(piece.type));
+  const canLeave = (piece, side) => piece.type !== "escalator" || side === piece.direction;
+  const canEnter = (piece, side) => piece.type !== "escalator" || side === OPPOSITE_SIDE[piece.direction];
+  const exitsFrom = new Map(nodes.map(node => [node, []]));
+  for (const node of nodes) {
+    for (const side of node.openSides || []) {
+      if (!canLeave(node, side)) continue;
+      for (const [cellX, cellY] of cellsOutside(node, side)) {
+        const neighbor = pieceAt(grid, cellX, cellY);
+        if (!neighbor || neighbor === node || !exitsFrom.has(neighbor)) continue;
+        if (!(neighbor.openSides || []).includes(OPPOSITE_SIDE[side]) || !canEnter(neighbor, OPPOSITE_SIDE[side])) continue;
+        exitsFrom.get(node).push(neighbor);
       }
     }
-    if (p.type === "tunnel") {
-      const twin = nodes.find(t => t !== p && t.type === "tunnel" && t.name === p.name);
-      if (twin) exits.get(p).push(twin);
+    if (node.type === "tunnel") {
+      const twin = nodes.find(other => other !== node && other.type === "tunnel" && other.name === node.name);
+      if (twin) exitsFrom.get(node).push(twin);
     }
   }
-  const entries = new Map(nodes.map(p => [p, []]));
-  for (const [p, outs] of exits) for (const n of outs) entries.get(n).push(p);
-  function reachable(start, links) {
+  const entriesInto = new Map(nodes.map(node => [node, []]));
+  for (const [node, exits] of exitsFrom) for (const exit of exits) entriesInto.get(exit).push(node);
+  function reachableFrom(start, links) {
     const seen = new Set([start]);
     const queue = [start];
-    while (queue.length) for (const n of links.get(queue.pop())) if (!seen.has(n)) { seen.add(n); queue.push(n); }
+    while (queue.length) {
+      for (const next of links.get(queue.pop())) {
+        if (!seen.has(next)) { seen.add(next); queue.push(next); }
+      }
+    }
     return seen;
   }
-  const forward = reachable(nodes[0], exits), backward = reachable(nodes[0], entries);
-  const stranded = nodes.filter(p => !forward.has(p) || !backward.has(p)).length;
+  const forwardReach = reachableFrom(nodes[0], exitsFrom);
+  const backwardReach = reachableFrom(nodes[0], entriesInto);
+  const stranded = nodes.filter(node => !forwardReach.has(node) || !backwardReach.has(node)).length;
   if (stranded) notes.push("Not every store can reach every other store.");
 
-  return { pieces, notes, counts: { stores, security, bigStores, escalators: esc, tunnelPairs, hallsApart, halls: hallCount(), emptyHalls, unusedEscalatorEnds, stranded } };
+  return {
+    pieces, notes,
+    counts: {
+      stores: storeCount, security: securityCount, bigStores: bigStoreCount, escalators: escalatorCount,
+      tunnelPairs: tunnelPairCount, hallsApart, halls: countHalls(), emptyHalls, unusedEscalatorEnds, stranded,
+    },
+  };
 }
 
 // ---------- rendering: printed-tile look ----------
-const FLOORS = {
+const FLOOR_COLORS = {
   plaza: "#8f5fae",
   hall: "#7a5fae",
   escalator: "#26232e",
@@ -685,105 +729,109 @@ const FLOORS = {
   security: "#4f2e2e",
   tunnel: "#33303e",
 };
-const EDGE = 5; // border strip thickness in px
-const BOARD_BG = "#1c1a22";
+const EDGE_THICKNESS = 5; // border strip thickness in px
+const OPEN_EDGE_COLOR = "#3d55c9";
+const WALL_EDGE_COLOR = "#d63c3c";
+const RAIL_COLOR = "#e8a33d";
+const BOARD_BACKGROUND = "#1c1a22";
 
-function svgEl(name, attrs) {
-  const el = document.createElementNS("http://www.w3.org/2000/svg", name);
-  for (const k in attrs) el.setAttribute(k, attrs[k]);
-  return el;
+function svgElement(name, attributes) {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+  for (const attribute in attributes) element.setAttribute(attribute, attributes[attribute]);
+  return element;
 }
 
-function drawMosaic(svg, px, py, pw, ph, base, rnd) {
-  // pixel-mosaic floor like the printed tiles
+// pixel-mosaic floor like the printed tiles
+function drawMosaic(svg, left, top, width, height, color, random) {
   const step = 10;
-  for (let y = py; y < py + ph; y += step)
-    for (let x = px; x < px + pw; x += step) {
-      const v = (rnd() - 0.5) * 0.25;
-      svg.appendChild(svgEl("rect", {
-        x, y, width: Math.min(step, px + pw - x), height: Math.min(step, py + ph - y),
-        fill: base, opacity: 0.85 + v,
+  for (let y = top; y < top + height; y += step)
+    for (let x = left; x < left + width; x += step) {
+      const shade = (random() - 0.5) * 0.25;
+      svg.appendChild(svgElement("rect", {
+        x, y, width: Math.min(step, left + width - x), height: Math.min(step, top + height - y),
+        fill: color, opacity: 0.85 + shade,
       }));
     }
 }
 
-function render(result, seedStr) {
-  const rnd = mulberry32(hashSeed(seedStr + ":art"));
+function render(result, seedText) {
+  const random = makeRandom(hashSeed(seedText + ":art"));
   // crop the board to the map with a fixed margin on every side
-  const PAD = 20;
-  let minX = GW, minY = GH, maxX = 0, maxY = 0;
-  for (const p of result.pieces) {
-    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
-    maxX = Math.max(maxX, p.x + p.w); maxY = Math.max(maxY, p.y + p.h);
+  const MARGIN = 20;
+  let minX = GRID_WIDTH, minY = GRID_HEIGHT, maxX = 0, maxY = 0;
+  for (const piece of result.pieces) {
+    minX = Math.min(minX, piece.x); minY = Math.min(minY, piece.y);
+    maxX = Math.max(maxX, piece.x + piece.width); maxY = Math.max(maxY, piece.y + piece.height);
   }
-  const width = (maxX - minX) * CELL + PAD * 2;
-  const height = (maxY - minY) * CELL + PAD * 2;
-  const svg = svgEl("svg", {
-    width, height,
-    viewBox: `${minX * CELL - PAD} ${minY * CELL - PAD} ${width} ${height}`,
+  const boardWidth = (maxX - minX) * CELL_SIZE + MARGIN * 2;
+  const boardHeight = (maxY - minY) * CELL_SIZE + MARGIN * 2;
+  const svg = svgElement("svg", {
+    width: boardWidth, height: boardHeight,
+    viewBox: `${minX * CELL_SIZE - MARGIN} ${minY * CELL_SIZE - MARGIN} ${boardWidth} ${boardHeight}`,
   });
 
-  for (const p of result.pieces) {
-    const px = p.x * CELL, py = p.y * CELL, pw = p.w * CELL, ph = p.h * CELL;
-    const open = p.openSides || [];
+  for (const piece of result.pieces) {
+    const left = piece.x * CELL_SIZE, top = piece.y * CELL_SIZE;
+    const width = piece.width * CELL_SIZE, height = piece.height * CELL_SIZE;
+    const openSides = piece.openSides || [];
 
     // edge strips: blue = open, red = wall
-    const sideColor = s => open.includes(s) ? "#3d55c9" : "#d63c3c";
-    svg.appendChild(svgEl("rect", { x: px, y: py, width: pw, height: EDGE, fill: sideColor("top") }));
-    svg.appendChild(svgEl("rect", { x: px, y: py + ph - EDGE, width: pw, height: EDGE, fill: sideColor("bottom") }));
-    svg.appendChild(svgEl("rect", { x: px, y: py, width: EDGE, height: ph, fill: sideColor("left") }));
-    svg.appendChild(svgEl("rect", { x: px + pw - EDGE, y: py, width: EDGE, height: ph, fill: sideColor("right") }));
+    const edgeColor = side => openSides.includes(side) ? OPEN_EDGE_COLOR : WALL_EDGE_COLOR;
+    svg.appendChild(svgElement("rect", { x: left, y: top, width, height: EDGE_THICKNESS, fill: edgeColor("top") }));
+    svg.appendChild(svgElement("rect", { x: left, y: top + height - EDGE_THICKNESS, width, height: EDGE_THICKNESS, fill: edgeColor("bottom") }));
+    svg.appendChild(svgElement("rect", { x: left, y: top, width: EDGE_THICKNESS, height, fill: edgeColor("left") }));
+    svg.appendChild(svgElement("rect", { x: left + width - EDGE_THICKNESS, y: top, width: EDGE_THICKNESS, height, fill: edgeColor("right") }));
 
     // floor
-    drawMosaic(svg, px + EDGE, py + EDGE, pw - EDGE * 2, ph - EDGE * 2, FLOORS[p.type], rnd);
+    drawMosaic(svg, left + EDGE_THICKNESS, top + EDGE_THICKNESS, width - EDGE_THICKNESS * 2, height - EDGE_THICKNESS * 2, FLOOR_COLORS[piece.type], random);
 
     // plaza fountain
-    if (p.type === "plaza") {
-      const cx = px + pw / 2, cy = py + ph / 2;
-      svg.appendChild(svgEl("circle", { cx, cy, r: 26, fill: "#b08d57", stroke: "#7a5f38", "stroke-width": 3 }));
-      svg.appendChild(svgEl("circle", { cx, cy, r: 16, fill: "#3f6b3a" }));
-      svg.appendChild(svgEl("circle", { cx, cy, r: 7, fill: "#b08d57" }));
+    if (piece.type === "plaza") {
+      const centerX = left + width / 2, centerY = top + height / 2;
+      svg.appendChild(svgElement("circle", { cx: centerX, cy: centerY, r: 26, fill: "#b08d57", stroke: "#7a5f38", "stroke-width": 3 }));
+      svg.appendChild(svgElement("circle", { cx: centerX, cy: centerY, r: 16, fill: "#3f6b3a" }));
+      svg.appendChild(svgElement("circle", { cx: centerX, cy: centerY, r: 7, fill: "#b08d57" }));
     }
 
     // escalator: orange rails + one-way arrows
-    if (p.type === "escalator") {
-      const horiz = p.w === 2;
-      if (horiz) {
-        svg.appendChild(svgEl("rect", { x: px + EDGE + 2, y: py + 9, width: pw - EDGE * 2 - 4, height: 3, fill: "#e8a33d" }));
-        svg.appendChild(svgEl("rect", { x: px + EDGE + 2, y: py + ph - 12, width: pw - EDGE * 2 - 4, height: 3, fill: "#e8a33d" }));
+    if (piece.type === "escalator") {
+      const horizontal = piece.width === 2;
+      if (horizontal) {
+        svg.appendChild(svgElement("rect", { x: left + EDGE_THICKNESS + 2, y: top + 9, width: width - EDGE_THICKNESS * 2 - 4, height: 3, fill: RAIL_COLOR }));
+        svg.appendChild(svgElement("rect", { x: left + EDGE_THICKNESS + 2, y: top + height - 12, width: width - EDGE_THICKNESS * 2 - 4, height: 3, fill: RAIL_COLOR }));
       } else {
-        svg.appendChild(svgEl("rect", { x: px + 9, y: py + EDGE + 2, width: 3, height: ph - EDGE * 2 - 4, fill: "#e8a33d" }));
-        svg.appendChild(svgEl("rect", { x: px + pw - 12, y: py + EDGE + 2, width: 3, height: ph - EDGE * 2 - 4, fill: "#e8a33d" }));
+        svg.appendChild(svgElement("rect", { x: left + 9, y: top + EDGE_THICKNESS + 2, width: 3, height: height - EDGE_THICKNESS * 2 - 4, fill: RAIL_COLOR }));
+        svg.appendChild(svgElement("rect", { x: left + width - 12, y: top + EDGE_THICKNESS + 2, width: 3, height: height - EDGE_THICKNESS * 2 - 4, fill: RAIL_COLOR }));
       }
-      for (const f of [0.3, 0.7]) {
-        const cx = horiz ? px + pw * f : px + pw / 2;
-        const cy = horiz ? py + ph / 2 : py + ph * f;
-        const s = 8;
-        let d;
-        if (p.dir === "right") d = `M ${cx - s} ${cy - s} L ${cx + s} ${cy} L ${cx - s} ${cy + s} Z`;
-        if (p.dir === "left")  d = `M ${cx + s} ${cy - s} L ${cx - s} ${cy} L ${cx + s} ${cy + s} Z`;
-        if (p.dir === "down")  d = `M ${cx - s} ${cy - s} L ${cx} ${cy + s} L ${cx + s} ${cy - s} Z`;
-        if (p.dir === "up")    d = `M ${cx - s} ${cy + s} L ${cx} ${cy - s} L ${cx + s} ${cy + s} Z`;
-        svg.appendChild(svgEl("path", { d, fill: "#eee", stroke: "#999", "stroke-width": 1 }));
+      for (const fraction of [0.3, 0.7]) {
+        const arrowX = horizontal ? left + width * fraction : left + width / 2;
+        const arrowY = horizontal ? top + height / 2 : top + height * fraction;
+        const arrowSize = 8;
+        let path;
+        if (piece.direction === "right") path = `M ${arrowX - arrowSize} ${arrowY - arrowSize} L ${arrowX + arrowSize} ${arrowY} L ${arrowX - arrowSize} ${arrowY + arrowSize} Z`;
+        if (piece.direction === "left")  path = `M ${arrowX + arrowSize} ${arrowY - arrowSize} L ${arrowX - arrowSize} ${arrowY} L ${arrowX + arrowSize} ${arrowY + arrowSize} Z`;
+        if (piece.direction === "down")  path = `M ${arrowX - arrowSize} ${arrowY - arrowSize} L ${arrowX} ${arrowY + arrowSize} L ${arrowX + arrowSize} ${arrowY - arrowSize} Z`;
+        if (piece.direction === "up")    path = `M ${arrowX - arrowSize} ${arrowY + arrowSize} L ${arrowX} ${arrowY - arrowSize} L ${arrowX + arrowSize} ${arrowY + arrowSize} Z`;
+        svg.appendChild(svgElement("path", { d: path, fill: "#eee", stroke: "#999", "stroke-width": 1 }));
       }
     }
 
     // label: big store number, security text, tunnel letter
-    if (p.name) {
-      const vertical = p.h > p.w && p.name.length > 2;
-      const fontSize = p.type === "bigstore" ? 26 : p.type === "tunnel" ? 16 : 9;
-      const cx = px + pw / 2, cy = py + ph / 2;
-      const t = svgEl("text", {
-        x: cx, y: cy + fontSize / 3,
+    if (piece.name) {
+      const vertical = piece.height > piece.width && piece.name.length > 2;
+      const fontSize = piece.type === "bigstore" ? 26 : piece.type === "tunnel" ? 16 : 9;
+      const centerX = left + width / 2, centerY = top + height / 2;
+      const label = svgElement("text", {
+        x: centerX, y: centerY + fontSize / 3,
         "text-anchor": "middle",
         "font-size": fontSize,
         "font-weight": 700,
         fill: "#f0ede4",
         "font-family": "system-ui, sans-serif",
       });
-      if (vertical) t.setAttribute("transform", `rotate(-90 ${cx} ${cy})`);
-      t.textContent = p.name;
-      svg.appendChild(t);
+      if (vertical) label.setAttribute("transform", `rotate(-90 ${centerX} ${centerY})`);
+      label.textContent = piece.name;
+      svg.appendChild(label);
     }
   }
   return svg;
@@ -791,88 +839,92 @@ function render(result, seedStr) {
 
 // ---------- wiring ----------
 // first-game layout: fixed settings, whatever the boxes say
-const STARTER = { halls: 6, stores: 15, escalators: 0, tunnelPairs: 0, starter: true };
+const STARTER_SETTINGS = { halls: 6, stores: 15, escalators: 0, tunnelPairs: 0, starter: true };
+const STORE_LIMIT = 26, ESCALATOR_LIMIT = 8, TUNNEL_PAIR_LIMIT = 3;
+// how many redraws to try at one hall count, and how far the count may climb
+const REDRAW_LIMIT = 12, HALL_LIMIT = 60;
 
-function run(starter) {
+function run(useStarter) {
   const seed = document.getElementById("seed").value || "mall";
   const hallsBox = document.getElementById("numHalls");
   hallsBox.classList.remove("raised");
-  const readCount = (id, max) => {
-    const box = document.getElementById(id);
-    const value = Math.min(Math.max(0, +box.value || 0), max);
+  // read a number box, clamp it to its limit, and write the clamped value back
+  const readCount = (boxId, limit) => {
+    const box = document.getElementById(boxId);
+    const value = Math.min(Math.max(0, +box.value || 0), limit);
     box.value = value;
     return value;
   };
-  const opts = starter ? { ...STARTER } : {
+  const settings = useStarter ? { ...STARTER_SETTINGS } : {
     halls: Math.max(4, +hallsBox.value || 0),
-    stores: readCount("numStores", 26),
-    escalators: readCount("numEscalators", 8),
-    tunnelPairs: readCount("numTunnelPairs", 3),
+    stores: readCount("numStores", STORE_LIMIT),
+    escalators: readCount("numEscalators", ESCALATOR_LIMIT),
+    tunnelPairs: readCount("numTunnelPairs", TUNNEL_PAIR_LIMIT),
     lockBigStores: document.getElementById("lockBigStores").checked,
     starter: false,
   };
   let result;
-  if (opts.starter) {
+  if (settings.starter) {
     // starter never grows spurs, so a random arrangement can fall short of
     // the requested count; redraw deterministically until every store fits
-    result = generate(seed, opts);
-    for (let k = 1; k < 60 && result.counts.stores < opts.stores; k++) {
-      result = generate(seed + "~" + k, opts);
+    result = generate(seed, settings);
+    for (let redraw = 1; redraw < 60 && result.counts.stores < settings.stores; redraw++) {
+      result = generate(seed + "~" + redraw, settings);
     }
   } else {
     // the box is a minimum: raise it one hall at a time and retry until the
     // smallest count that fits every store, escalator, and tunnel pair is
     // found. At each count a few redraws are tried, keeping the one with the
     // fewest empty halls.
-    const askedHalls = opts.halls;
-    const REDRAWS = 12, MAX_HALLS = 60;
-    let fitting = null;
-    for (let halls = askedHalls; halls <= MAX_HALLS && !fitting; halls++) {
-      opts.halls = halls;
-      for (let k = 0; k < REDRAWS; k++) {
-        const r = generate(k ? seed + "~" + k : seed, opts);
-        result = r;
-        const short = r.counts.stores < opts.stores || r.counts.bigStores < 4 || r.counts.escalators < opts.escalators
-          || r.counts.tunnelPairs < opts.tunnelPairs || r.counts.unusedEscalatorEnds > 0
-          || r.counts.stranded > 0;
-        if (short) continue;
-        if (!fitting || r.counts.emptyHalls < fitting.counts.emptyHalls) fitting = r;
-        if (r.counts.emptyHalls === 0) break;
+    const askedHalls = settings.halls;
+    let bestFit = null;
+    for (let halls = askedHalls; halls <= HALL_LIMIT && !bestFit; halls++) {
+      settings.halls = halls;
+      for (let redraw = 0; redraw < REDRAW_LIMIT; redraw++) {
+        const attempt = generate(redraw ? seed + "~" + redraw : seed, settings);
+        result = attempt;
+        const counts = attempt.counts;
+        const fallsShort = counts.stores < settings.stores || counts.bigStores < 4
+          || counts.escalators < settings.escalators || counts.tunnelPairs < settings.tunnelPairs
+          || counts.unusedEscalatorEnds > 0 || counts.stranded > 0;
+        if (fallsShort) continue;
+        if (!bestFit || counts.emptyHalls < bestFit.counts.emptyHalls) bestFit = attempt;
+        if (counts.emptyHalls === 0) break;
       }
     }
-    if (fitting) {
-      result = fitting;
-      if (opts.halls !== askedHalls) {
-        hallsBox.value = opts.halls;
+    if (bestFit) {
+      result = bestFit;
+      if (settings.halls !== askedHalls) {
+        hallsBox.value = settings.halls;
         hallsBox.classList.add("raised");
       }
     }
   }
-  const wrap = document.getElementById("board-wrap");
-  wrap.innerHTML = "";
-  wrap.appendChild(render(result, seed));
-  const c = result.counts;
-  let html = `<b>Seed:</b> ${seed} &nbsp; 2 plazas (${c.hallsApart} halls apart), ${plural(c.halls, "hall")}, ${plural(c.bigStores, "big store")}, ${plural(c.stores, "store")}, ${plural(c.security, "security room")}, ${plural(c.escalators, "escalator")}, ${plural(c.tunnelPairs, "tunnel pair")}.`;
-  if (result.notes.length) html += "<br><b>Notes:</b> " + result.notes.join(" ");
-  document.getElementById("summary").innerHTML = html;
+  const boardWrap = document.getElementById("board-wrap");
+  boardWrap.innerHTML = "";
+  boardWrap.appendChild(render(result, seed));
+  const counts = result.counts;
+  let summaryHtml = `<b>Seed:</b> ${seed} &nbsp; 2 plazas (${counts.hallsApart} halls apart), ${plural(counts.halls, "hall")}, ${plural(counts.bigStores, "big store")}, ${plural(counts.stores, "store")}, ${plural(counts.security, "security room")}, ${plural(counts.escalators, "escalator")}, ${plural(counts.tunnelPairs, "tunnel pair")}.`;
+  if (result.notes.length) summaryHtml += "<br><b>Notes:</b> " + result.notes.join(" ");
+  document.getElementById("summary").innerHTML = summaryHtml;
   // Generate stays off until a setting changes from what is on the board.
   // After the starter mall the boxes describe a different map, so it stays on.
-  lastGenerated = starter ? null : settingsNow();
+  lastGeneratedSettings = useStarter ? null : settingsSnapshot();
   refreshGenerateButton();
 }
 
-const SETTING_IDS = ["seed", "numHalls", "numStores", "numEscalators", "numTunnelPairs", "lockBigStores"];
-const settingsNow = () => SETTING_IDS.map(id => {
-  const box = document.getElementById(id);
+const SETTING_BOX_IDS = ["seed", "numHalls", "numStores", "numEscalators", "numTunnelPairs", "lockBigStores"];
+const settingsSnapshot = () => SETTING_BOX_IDS.map(boxId => {
+  const box = document.getElementById(boxId);
   return box.type === "checkbox" ? box.checked : box.value;
 }).join("|");
-let lastGenerated = null;
+let lastGeneratedSettings = null;
 function refreshGenerateButton() {
-  document.getElementById("generate").disabled = lastGenerated !== null && settingsNow() === lastGenerated;
+  document.getElementById("generate").disabled = lastGeneratedSettings !== null && settingsSnapshot() === lastGeneratedSettings;
 }
-for (const id of SETTING_IDS) {
-  document.getElementById(id).addEventListener("input", refreshGenerateButton);
-  document.getElementById(id).addEventListener("change", refreshGenerateButton);
+for (const boxId of SETTING_BOX_IDS) {
+  document.getElementById(boxId).addEventListener("input", refreshGenerateButton);
+  document.getElementById(boxId).addEventListener("change", refreshGenerateButton);
 }
 
 document.getElementById("generate").addEventListener("click", () => run());
@@ -882,26 +934,26 @@ document.getElementById("randomize").addEventListener("click", () => {
   run();
 });
 document.getElementById("save").addEventListener("click", () => {
-  const svg = document.querySelector("#board-wrap svg");
+  const boardSvg = document.querySelector("#board-wrap svg");
   const seed = document.getElementById("seed").value || "mall";
-  const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)], { type: "image/svg+xml" }));
-  const img = new Image();
-  img.onload = () => {
+  const svgUrl = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(boardSvg)], { type: "image/svg+xml" }));
+  const image = new Image();
+  image.onload = () => {
     const scale = 2;
     const canvas = document.createElement("canvas");
-    canvas.width = svg.width.baseVal.value * scale;
-    canvas.height = svg.height.baseVal.value * scale;
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = BOARD_BG;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    URL.revokeObjectURL(url);
+    canvas.width = boardSvg.width.baseVal.value * scale;
+    canvas.height = boardSvg.height.baseVal.value * scale;
+    const context = canvas.getContext("2d");
+    context.fillStyle = BOARD_BACKGROUND;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(svgUrl);
     const link = document.createElement("a");
     link.download = seed.replace(/[^\w-]+/g, "_") + ".png";
     link.href = canvas.toDataURL("image/png");
     link.click();
   };
-  img.src = url;
+  image.src = svgUrl;
 });
 run(true);
 </script>
