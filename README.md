@@ -6,7 +6,7 @@ https://evident-dev.github.io/Shopping-Mall-Map-Generator/
 ## Generating a map
 
 1. Type a seed, or click **Generate new seed**.
-2. Set halls, stores, escalators and tunnel pairs. Halls is a minimum and goes up on its own when the stores need more room. Tick **Lock large store to plaza** to keep the big stores on the plazas.
+2. Set stores, escalators and tunnel pairs. The Halls box just shows the total: the generator always finds the fewest halls that fit the request for that seed. Tick **Lock large store to plaza** to keep the big stores on the plazas.
 3. Click **Generate**, then **Save**. **Starter mall** gives the first-game layout, which is what the page opens on.
 
 ## Seeds
@@ -29,7 +29,7 @@ A seed is any text. The same seed and settings always produce the same map, so s
 
 ### Halls
 
-- **Minimum hall count.** The number in the Halls box is a floor, not a target. The generator builds exactly that many halls and never adds more on its own. If the map cannot then satisfy every request, the box is raised by one and the map is regenerated, repeating until it fits. The box turns red when it was raised.
+- **Minimum hall count.** Every generation searches up from the smallest possible skeleton (the 4 corridor halls). The hall count is raised by one and the map regenerated until every request fits, so each seed gets its own minimum. The Halls box only displays the total of the kept map.
 - **Connection.** Every spur hall must have at least one side touching a hall, plaza, or escalator, and that neighbour's facing edge must be open (blue). Touching a wall edge does not count.
 - **Long side rule.** Two halls may never touch long side to long side. A hall may attach its short end to another hall's long side, or short end to short end.
 - **One per long side.** No more than one hall may attach anywhere along a given hall's long side.

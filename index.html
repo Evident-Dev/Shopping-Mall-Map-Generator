@@ -38,7 +38,10 @@
     border: none; border-radius: 6px; cursor: pointer;
     background: #2f6f4f; color: #fff;
   }
-  .controls input.raised { border: 2px solid var(--wall); }
+  .controls output {
+    padding: 6px 8px; font-size: 14px; width: 60px; text-align: center;
+    border: 1px solid #ddd; border-radius: 6px; background: #eee; color: #444;
+  }
   .controls button.secondary { background: #666; }
   .controls button:hover { filter: brightness(1.1); }
   .controls button:disabled { background: #aaa; cursor: default; filter: none; }
@@ -64,7 +67,7 @@
     <input type="text" id="seed" value="mall-1">
   </label>
   <label>Halls
-    <input type="number" id="numHalls" value="6" min="4" max="40">
+    <output id="hallTotal">6</output>
   </label>
   <label>Stores
     <input type="number" id="numStores" value="16" min="0" max="26">
@@ -846,8 +849,6 @@ const REDRAW_LIMIT = 12, HALL_LIMIT = 60;
 
 function run(useStarter) {
   const seed = document.getElementById("seed").value || "mall";
-  const hallsBox = document.getElementById("numHalls");
-  hallsBox.classList.remove("raised");
   // read a number box, clamp it to its limit, and write the clamped value back
   const readCount = (boxId, limit) => {
     const box = document.getElementById(boxId);
@@ -856,7 +857,9 @@ function run(useStarter) {
     return value;
   };
   const settings = useStarter ? { ...STARTER_SETTINGS } : {
-    halls: Math.max(4, +hallsBox.value || 0),
+    // always search up from the smallest possible skeleton (the 4 corridor
+    // halls), so every seed gets its own minimum hall count
+    halls: 4,
     stores: readCount("numStores", STORE_LIMIT),
     escalators: readCount("numEscalators", ESCALATOR_LIMIT),
     tunnelPairs: readCount("numTunnelPairs", TUNNEL_PAIR_LIMIT),
@@ -892,18 +895,13 @@ function run(useStarter) {
         if (counts.emptyHalls === 0) break;
       }
     }
-    if (bestFit) {
-      result = bestFit;
-      if (settings.halls !== askedHalls) {
-        hallsBox.value = settings.halls;
-        hallsBox.classList.add("raised");
-      }
-    }
+    if (bestFit) result = bestFit;
   }
   const boardWrap = document.getElementById("board-wrap");
   boardWrap.innerHTML = "";
   boardWrap.appendChild(render(result, seed));
   const counts = result.counts;
+  document.getElementById("hallTotal").textContent = counts.halls;
   let summaryHtml = `<b>Seed:</b> ${seed} &nbsp; 2 plazas (${counts.hallsApart} halls apart), ${plural(counts.halls, "hall")}, ${plural(counts.bigStores, "big store")}, ${plural(counts.stores, "store")}, ${plural(counts.security, "security room")}, ${plural(counts.escalators, "escalator")}, ${plural(counts.tunnelPairs, "tunnel pair")}.`;
   if (result.notes.length) summaryHtml += "<br><b>Notes:</b> " + result.notes.join(" ");
   document.getElementById("summary").innerHTML = summaryHtml;
@@ -913,7 +911,7 @@ function run(useStarter) {
   refreshGenerateButton();
 }
 
-const SETTING_BOX_IDS = ["seed", "numHalls", "numStores", "numEscalators", "numTunnelPairs", "lockBigStores"];
+const SETTING_BOX_IDS = ["seed", "numStores", "numEscalators", "numTunnelPairs", "lockBigStores"];
 const settingsSnapshot = () => SETTING_BOX_IDS.map(boxId => {
   const box = document.getElementById(boxId);
   return box.type === "checkbox" ? box.checked : box.value;
