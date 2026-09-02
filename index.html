@@ -188,7 +188,7 @@ function generate(seedText, settings) {
   const pieces = [];
   const notes = [];
 
-  // The mall is laid out around a vertical centre line. Structural pieces
+  // The mall is laid out around a vertical center line. Structural pieces
   // try to place as mirrored left/right pairs so the map reads symmetric,
   // but a pair degrades to a single piece when the mirror spot is taken:
   // close to symmetric, not rigidly so.
@@ -262,15 +262,15 @@ function generate(seedText, settings) {
     cell.x >= rectangle.x && cell.x < rectangle.x + rectangle.width
     && cell.y >= rectangle.y && cell.y < rectangle.y + rectangle.height);
   const horizontalHalls = () => pieces.filter(piece => piece.type === "hall" && piece.width === 2);
-  const neighbourPieces = piece => ALL_SIDES.flatMap(side => cellsOutside(piece, side))
+  const neighborPieces = piece => ALL_SIDES.flatMap(side => cellsOutside(piece, side))
     .map(([cellX, cellY]) => pieceAt(grid, cellX, cellY));
-  const touchesPiece = (piece, other) => neighbourPieces(piece).includes(other);
+  const touchesPiece = (piece, other) => neighborPieces(piece).includes(other);
   const runsAlong = (hall, direction) => (hall.width === 2) === (direction === "left" || direction === "right");
   // null: free choice; false: no legal direction; otherwise the required one
   function forcedDirection(hall) {
-    const directions = new Set(neighbourPieces(hall)
-      .filter(neighbour => neighbour && neighbour.type === "escalator")
-      .map(neighbour => neighbour.direction));
+    const directions = new Set(neighborPieces(hall)
+      .filter(neighbor => neighbor && neighbor.type === "escalator")
+      .map(neighbor => neighbor.direction));
     if (!directions.size) return null;
     if (directions.size > 1) return false;
     const [direction] = directions;
@@ -416,21 +416,21 @@ function generate(seedText, settings) {
     for (const side of ALL_SIDES) {
       const touching = new Set();
       for (const [cellX, cellY] of cellsOutside(candidate, side)) {
-        const neighbour = pieceAt(grid, cellX, cellY);
-        if (isHallLike(neighbour)) touching.add(neighbour);
+        const neighbor = pieceAt(grid, cellX, cellY);
+        if (isHallLike(neighbor)) touching.add(neighbor);
       }
       const onLongSide = candidateLongSides.includes(side);
       if (onLongSide && cellsOutside(candidate, side).some(([cellX, cellY]) => cellIs(grid, cellX, cellY, ["plaza"]))) return false;
       if (!touching.size) continue;
       if (onLongSide && touching.size > 1) return false;
-      for (const neighbour of touching) {
-        const onNeighbourLongSide = longSidesOf(neighbour).includes(OPPOSITE_SIDE[side]);
-        if (onLongSide && onNeighbourLongSide) return false;
-        if (onNeighbourLongSide) {
-          // the candidate would join the neighbour's long side: that side must be empty of halls
-          for (const [cellX, cellY] of cellsOutside(neighbour, OPPOSITE_SIDE[side])) {
+      for (const neighbor of touching) {
+        const onNeighborLongSide = longSidesOf(neighbor).includes(OPPOSITE_SIDE[side]);
+        if (onLongSide && onNeighborLongSide) return false;
+        if (onNeighborLongSide) {
+          // the candidate would join the neighbor's long side: that side must be empty of halls
+          for (const [cellX, cellY] of cellsOutside(neighbor, OPPOSITE_SIDE[side])) {
             const other = pieceAt(grid, cellX, cellY);
-            if (other && other !== neighbour && isHallLike(other)) return false;
+            if (other && other !== neighbor && isHallLike(other)) return false;
           }
         }
       }
@@ -448,9 +448,9 @@ function generate(seedText, settings) {
     for (const side of ALL_SIDES)
       for (const [cellX, cellY] of cellsOutside(candidate, side)) {
         if (!cellIs(grid, cellX, cellY, CONNECTORS)) continue;
-        const neighbour = grid[cellY][cellX];
-        if (!(neighbour.openSides || []).includes(OPPOSITE_SIDE[side])) continue;
-        if (depth === null || neighbour.depth + 1 < depth) depth = neighbour.depth + 1;
+        const neighbor = grid[cellY][cellX];
+        if (!(neighbor.openSides || []).includes(OPPOSITE_SIDE[side])) continue;
+        if (depth === null || neighbor.depth + 1 < depth) depth = neighbor.depth + 1;
       }
     return depth;
   }
@@ -515,9 +515,9 @@ function generate(seedText, settings) {
   function endState(hall, side) {
     const [[cellX, cellY]] = cellsOutside(hall, side);
     if (!inBounds(cellX, cellY)) return "blocked";
-    const neighbour = grid[cellY][cellX];
-    if (!neighbour) return "free";
-    const leadsOn = CONNECTORS.includes(neighbour.type) && (neighbour.openSides || []).includes(OPPOSITE_SIDE[side]);
+    const neighbor = grid[cellY][cellX];
+    if (!neighbor) return "free";
+    const leadsOn = CONNECTORS.includes(neighbor.type) && (neighbor.openSides || []).includes(OPPOSITE_SIDE[side]);
     return leadsOn ? "linked" : "blocked";
   }
   // number of ends needing a tunnel, or -1 when an end can never lead anywhere
@@ -619,11 +619,11 @@ function generate(seedText, settings) {
         if (grid[y][x]) continue;
         if (placedTunnels().some(tunnel => tooCloseForTunnels(tunnel, { x, y }))) continue;
         for (const [stepX, stepY, side] of [[1, 0, "right"], [-1, 0, "left"], [0, 1, "bottom"], [0, -1, "top"]]) {
-          const neighbourX = x + stepX, neighbourY = y + stepY;
-          if (!cellIs(grid, neighbourX, neighbourY, WALKABLE)) continue;
-          // the neighbour's facing edge must be open (blue), not a wall
-          const neighbour = grid[neighbourY][neighbourX];
-          if (!(neighbour.openSides || []).includes(OPPOSITE_SIDE[side])) continue;
+          const neighborX = x + stepX, neighborY = y + stepY;
+          if (!cellIs(grid, neighborX, neighborY, WALKABLE)) continue;
+          // the neighbor's facing edge must be open (blue), not a wall
+          const neighbor = grid[neighborY][neighborX];
+          if (!(neighbor.openSides || []).includes(OPPOSITE_SIDE[side])) continue;
           spots.push({ x, y, side });
           break;
         }
@@ -663,9 +663,9 @@ function generate(seedText, settings) {
   // escalator ends that still lead nowhere
   const leadsSomewhere = (escalator, side) => {
     const [[cellX, cellY]] = cellsOutside(escalator, side);
-    const neighbour = pieceAt(grid, cellX, cellY);
-    return !!neighbour && (CONNECTORS.includes(neighbour.type) || neighbour.type === "tunnel")
-      && (neighbour.openSides || []).includes(OPPOSITE_SIDE[side]);
+    const neighbor = pieceAt(grid, cellX, cellY);
+    return !!neighbor && (CONNECTORS.includes(neighbor.type) || neighbor.type === "tunnel")
+      && (neighbor.openSides || []).includes(OPPOSITE_SIDE[side]);
   };
   const unusedEscalatorEnds = pieces.filter(piece => piece.type === "escalator")
     .reduce((total, escalator) => total + openEndsOf(escalator).filter(side => !leadsSomewhere(escalator, side)).length, 0);
@@ -682,10 +682,10 @@ function generate(seedText, settings) {
     for (const side of node.openSides || []) {
       if (!canLeave(node, side)) continue;
       for (const [cellX, cellY] of cellsOutside(node, side)) {
-        const neighbour = pieceAt(grid, cellX, cellY);
-        if (!neighbour || neighbour === node || !exitsFrom.has(neighbour)) continue;
-        if (!(neighbour.openSides || []).includes(OPPOSITE_SIDE[side]) || !canEnter(neighbour, OPPOSITE_SIDE[side])) continue;
-        exitsFrom.get(node).push(neighbour);
+        const neighbor = pieceAt(grid, cellX, cellY);
+        if (!neighbor || neighbor === node || !exitsFrom.has(neighbor)) continue;
+        if (!(neighbor.openSides || []).includes(OPPOSITE_SIDE[side]) || !canEnter(neighbor, OPPOSITE_SIDE[side])) continue;
+        exitsFrom.get(node).push(neighbor);
       }
     }
     if (node.type === "tunnel") {
@@ -720,7 +720,7 @@ function generate(seedText, settings) {
 }
 
 // ---------- rendering: printed-tile look ----------
-const FLOOR_COLOURS = {
+const FLOOR_COLORS = {
   plaza: "#8f5fae",
   hall: "#7a5fae",
   escalator: "#26232e",
@@ -730,9 +730,9 @@ const FLOOR_COLOURS = {
   tunnel: "#33303e",
 };
 const EDGE_THICKNESS = 5; // border strip thickness in px
-const OPEN_EDGE_COLOUR = "#3d55c9";
-const WALL_EDGE_COLOUR = "#d63c3c";
-const RAIL_COLOUR = "#e8a33d";
+const OPEN_EDGE_COLOR = "#3d55c9";
+const WALL_EDGE_COLOR = "#d63c3c";
+const RAIL_COLOR = "#e8a33d";
 const BOARD_BACKGROUND = "#1c1a22";
 
 function svgElement(name, attributes) {
@@ -742,14 +742,14 @@ function svgElement(name, attributes) {
 }
 
 // pixel-mosaic floor like the printed tiles
-function drawMosaic(svg, left, top, width, height, colour, random) {
+function drawMosaic(svg, left, top, width, height, color, random) {
   const step = 10;
   for (let y = top; y < top + height; y += step)
     for (let x = left; x < left + width; x += step) {
       const shade = (random() - 0.5) * 0.25;
       svg.appendChild(svgElement("rect", {
         x, y, width: Math.min(step, left + width - x), height: Math.min(step, top + height - y),
-        fill: colour, opacity: 0.85 + shade,
+        fill: color, opacity: 0.85 + shade,
       }));
     }
 }
@@ -776,32 +776,32 @@ function render(result, seedText) {
     const openSides = piece.openSides || [];
 
     // edge strips: blue = open, red = wall
-    const edgeColour = side => openSides.includes(side) ? OPEN_EDGE_COLOUR : WALL_EDGE_COLOUR;
-    svg.appendChild(svgElement("rect", { x: left, y: top, width, height: EDGE_THICKNESS, fill: edgeColour("top") }));
-    svg.appendChild(svgElement("rect", { x: left, y: top + height - EDGE_THICKNESS, width, height: EDGE_THICKNESS, fill: edgeColour("bottom") }));
-    svg.appendChild(svgElement("rect", { x: left, y: top, width: EDGE_THICKNESS, height, fill: edgeColour("left") }));
-    svg.appendChild(svgElement("rect", { x: left + width - EDGE_THICKNESS, y: top, width: EDGE_THICKNESS, height, fill: edgeColour("right") }));
+    const edgeColor = side => openSides.includes(side) ? OPEN_EDGE_COLOR : WALL_EDGE_COLOR;
+    svg.appendChild(svgElement("rect", { x: left, y: top, width, height: EDGE_THICKNESS, fill: edgeColor("top") }));
+    svg.appendChild(svgElement("rect", { x: left, y: top + height - EDGE_THICKNESS, width, height: EDGE_THICKNESS, fill: edgeColor("bottom") }));
+    svg.appendChild(svgElement("rect", { x: left, y: top, width: EDGE_THICKNESS, height, fill: edgeColor("left") }));
+    svg.appendChild(svgElement("rect", { x: left + width - EDGE_THICKNESS, y: top, width: EDGE_THICKNESS, height, fill: edgeColor("right") }));
 
     // floor
-    drawMosaic(svg, left + EDGE_THICKNESS, top + EDGE_THICKNESS, width - EDGE_THICKNESS * 2, height - EDGE_THICKNESS * 2, FLOOR_COLOURS[piece.type], random);
+    drawMosaic(svg, left + EDGE_THICKNESS, top + EDGE_THICKNESS, width - EDGE_THICKNESS * 2, height - EDGE_THICKNESS * 2, FLOOR_COLORS[piece.type], random);
 
     // plaza fountain
     if (piece.type === "plaza") {
-      const centreX = left + width / 2, centreY = top + height / 2;
-      svg.appendChild(svgElement("circle", { cx: centreX, cy: centreY, r: 26, fill: "#b08d57", stroke: "#7a5f38", "stroke-width": 3 }));
-      svg.appendChild(svgElement("circle", { cx: centreX, cy: centreY, r: 16, fill: "#3f6b3a" }));
-      svg.appendChild(svgElement("circle", { cx: centreX, cy: centreY, r: 7, fill: "#b08d57" }));
+      const centerX = left + width / 2, centerY = top + height / 2;
+      svg.appendChild(svgElement("circle", { cx: centerX, cy: centerY, r: 26, fill: "#b08d57", stroke: "#7a5f38", "stroke-width": 3 }));
+      svg.appendChild(svgElement("circle", { cx: centerX, cy: centerY, r: 16, fill: "#3f6b3a" }));
+      svg.appendChild(svgElement("circle", { cx: centerX, cy: centerY, r: 7, fill: "#b08d57" }));
     }
 
     // escalator: orange rails + one-way arrows
     if (piece.type === "escalator") {
       const horizontal = piece.width === 2;
       if (horizontal) {
-        svg.appendChild(svgElement("rect", { x: left + EDGE_THICKNESS + 2, y: top + 9, width: width - EDGE_THICKNESS * 2 - 4, height: 3, fill: RAIL_COLOUR }));
-        svg.appendChild(svgElement("rect", { x: left + EDGE_THICKNESS + 2, y: top + height - 12, width: width - EDGE_THICKNESS * 2 - 4, height: 3, fill: RAIL_COLOUR }));
+        svg.appendChild(svgElement("rect", { x: left + EDGE_THICKNESS + 2, y: top + 9, width: width - EDGE_THICKNESS * 2 - 4, height: 3, fill: RAIL_COLOR }));
+        svg.appendChild(svgElement("rect", { x: left + EDGE_THICKNESS + 2, y: top + height - 12, width: width - EDGE_THICKNESS * 2 - 4, height: 3, fill: RAIL_COLOR }));
       } else {
-        svg.appendChild(svgElement("rect", { x: left + 9, y: top + EDGE_THICKNESS + 2, width: 3, height: height - EDGE_THICKNESS * 2 - 4, fill: RAIL_COLOUR }));
-        svg.appendChild(svgElement("rect", { x: left + width - 12, y: top + EDGE_THICKNESS + 2, width: 3, height: height - EDGE_THICKNESS * 2 - 4, fill: RAIL_COLOUR }));
+        svg.appendChild(svgElement("rect", { x: left + 9, y: top + EDGE_THICKNESS + 2, width: 3, height: height - EDGE_THICKNESS * 2 - 4, fill: RAIL_COLOR }));
+        svg.appendChild(svgElement("rect", { x: left + width - 12, y: top + EDGE_THICKNESS + 2, width: 3, height: height - EDGE_THICKNESS * 2 - 4, fill: RAIL_COLOR }));
       }
       for (const fraction of [0.3, 0.7]) {
         const arrowX = horizontal ? left + width * fraction : left + width / 2;
@@ -820,16 +820,16 @@ function render(result, seedText) {
     if (piece.name) {
       const vertical = piece.height > piece.width && piece.name.length > 2;
       const fontSize = piece.type === "bigstore" ? 26 : piece.type === "tunnel" ? 16 : 9;
-      const centreX = left + width / 2, centreY = top + height / 2;
+      const centerX = left + width / 2, centerY = top + height / 2;
       const label = svgElement("text", {
-        x: centreX, y: centreY + fontSize / 3,
+        x: centerX, y: centerY + fontSize / 3,
         "text-anchor": "middle",
         "font-size": fontSize,
         "font-weight": 700,
         fill: "#f0ede4",
         "font-family": "system-ui, sans-serif",
       });
-      if (vertical) label.setAttribute("transform", `rotate(-90 ${centreX} ${centreY})`);
+      if (vertical) label.setAttribute("transform", `rotate(-90 ${centerX} ${centerY})`);
       label.textContent = piece.name;
       svg.appendChild(label);
     }
