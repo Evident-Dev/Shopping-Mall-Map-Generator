@@ -41,6 +41,7 @@
   .controls input.raised { border: 2px solid var(--wall); }
   .controls button.secondary { background: #666; }
   .controls button:hover { filter: brightness(1.1); }
+  .controls button:disabled { background: #aaa; cursor: default; filter: none; }
   #board-wrap { padding: 4px 20px 12px; overflow-x: auto; }
   svg { background: #1c1a22; border: 1px solid #ccc; border-radius: 8px; display: block; }
   .legend {
@@ -74,8 +75,11 @@
   <label>Tunnel pairs
     <input type="number" id="numTunnelPairs" value="2" min="0" max="3">
   </label>
+  <label style="flex-direction:row;align-items:center;gap:6px;padding-bottom:8px">
+    <input type="checkbox" id="lockBigStores" style="width:auto"> Lock large store to plaza
+  </label>
   <button id="generate">Generate</button>
-  <button id="randomize" class="secondary">Random seed</button>
+  <button id="randomize">Generate new seed</button>
   <button id="starter" class="secondary">Starter mall</button>
   <button id="save" class="secondary">Save</button>
 </div>
@@ -203,32 +207,19 @@ function generate(seedStr, opts) {
     }
   }
 
-  // --- 3. big stores: 2 per plaza, independent per side (top/bottom/outer) ---
-  let playerNum = 1;
-  for (const plaza of [plazaL, plazaR]) {
-    const isLeft = plaza === plazaL;
-    const spotChoices = [
-      { x: plaza.x, y: plaza.y - 2, w: 4, h: 2, side: "bottom" },
-      { x: plaza.x, y: plaza.y + 4, w: 4, h: 2, side: "top" },
-    ];
-    if (!opts.starter) spotChoices.push(
-      { x: isLeft ? plaza.x - 2 : plaza.x + 4, y: plaza.y, w: 2, h: 4, side: isLeft ? "right" : "left" }
-    );
-    const spots = shuffle(spotChoices, rnd);
-    let placed = 0;
-    for (const s of spots) {
-      if (placed >= 2) break;
-      if (fits(grid, s.x, s.y, s.w, s.h)) {
-        place(grid, pieces, {
-          type: "bigstore", x: s.x, y: s.y, w: s.w, h: s.h,
-          openSides: [s.side],
-          name: String(playerNum),
-        });
-        playerNum++;
-        placed++;
-      }
+  // --- 3. big stores ---
+  // starter mall: two per plaza, top and bottom. Otherwise they are placed
+  // once the halls exist, see below.
+  let bigStores = 0;
+  function placeBigStore(s) {
+    bigStores++;
+    place(grid, pieces, { type: "bigstore", x: s.x, y: s.y, w: s.w, h: s.h, openSides: [s.side], name: String(bigStores) });
+  }
+  if (opts.starter) {
+    for (const plaza of [plazaL, plazaR]) {
+      placeBigStore({ x: plaza.x, y: plaza.y - 2, w: 4, h: 2, side: "bottom" });
+      placeBigStore({ x: plaza.x, y: plaza.y + 4, w: 4, h: 2, side: "top" });
     }
-    if (placed < 2) notes.push("Only one big store fit on a plaza.");
   }
 
   // --- 4. escalators: prefer converting mirrored hallway pairs ---
@@ -295,6 +286,55 @@ function generate(seedStr, opts) {
     if (forced === false) continue;
     toEscalator(h, forced || randomDir(h));
     esc++;
+  }
+
+  // a big store's door edge is 4 cells long and must sit either on a plaza
+  // or across exactly two end-to-end halls, corridor or spur
+  function legalBigStoreSpots() {
+    const spots = [];
+    const seen = new Set();
+    const consider = (x, y, w, h, side) => {
+      const key = [x, y, w, h, side].join();
+      if (seen.has(key)) return;
+      seen.add(key);
+      if (!fits(grid, x, y, w, h) || overlapsReserved({ x, y, w, h })) return;
+      const hosts = sideCells({ x, y, w, h }, side)
+        .map(([cx, cy]) => cellIs(grid, cx, cy, ["plaza", "hall"]) ? grid[cy][cx] : null);
+      if (hosts.includes(null)) return;
+      const distinct = new Set(hosts).size;
+      const onPlaza = distinct === 1 && hosts[0].type === "plaza";
+      const onTwoHalls = !opts.lockBigStores && distinct === 2 && hosts.every(p => p.type === "hall");
+      if (onPlaza || onTwoHalls) spots.push({ x, y, w, h, side });
+    };
+    for (const pc of pieces) {
+      if (pc.type !== "plaza" && pc.type !== "hall") continue;
+      for (let x = pc.x - 3; x < pc.x + pc.w; x++) {
+        consider(x, pc.y - 2, 4, 2, "bottom");
+        consider(x, pc.y + pc.h, 4, 2, "top");
+      }
+      for (let y = pc.y - 3; y < pc.y + pc.h; y++) {
+        consider(pc.x - 2, y, 2, 4, "right");
+        consider(pc.x + pc.w, y, 2, 4, "left");
+      }
+    }
+    return spots;
+  }
+  // random spot each time, taking its mirror next when that is legal too.
+  // Locked to the plazas, this runs before any spur can take a plaza side;
+  // otherwise it waits until the halls and escalators exist.
+  function placeBigStores() {
+    let bigGuard = 0;
+    while (bigStores < 4 && bigGuard++ < 20) {
+      const spots = shuffle(legalBigStoreSpots(), rnd);
+      if (!spots.length) break;
+      const s = spots[0];
+      placeBigStore(s);
+      if (bigStores >= 4) break;
+      const mirror = { x: mirrorX(s), y: s.y, w: s.w, h: s.h, side: mirrorSideName(s.side) };
+      const key = t => [t.x, t.y, t.w, t.h, t.side].join();
+      if (legalBigStoreSpots().some(t => key(t) === key(mirror))) placeBigStore(mirror);
+    }
+    if (bigStores < 4) notes.push("Only " + plural(bigStores, "big store") + " fit.");
   }
 
   // --- 5. security + stores: 2x1, blue long side flush to hallway or plaza ---
@@ -430,6 +470,7 @@ function generate(seedStr, opts) {
   // grow the skeleton to exactly the requested hall count and stop there;
   // the caller raises the count and retries when stores do not fit
   // (starter mall never grows: exactly the 6 corridor halls)
+  if (opts.lockBigStores) placeBigStores();
   let growGuard = 0;
   while (!opts.starter && hallCount() < opts.halls && growGuard++ < 80) {
     if (!addSpur(opts.halls)) break;
@@ -491,7 +532,10 @@ function generate(seedStr, opts) {
     esc++;
   }
 
-  const ROOMS = ["store", "security"];
+
+  if (!opts.starter && !opts.lockBigStores) placeBigStores();
+
+  const ROOMS = ["store", "security", "bigstore"];
   const hasRoom = h => ALL_OPEN.some(side =>
     sideCells(h, side).some(([cx, cy]) => cellIs(grid, cx, cy, ROOMS)));
   // fill from the core outward; at the same depth a hall with no storefront
@@ -628,7 +672,7 @@ function generate(seedStr, opts) {
   const stranded = nodes.filter(p => !forward.has(p) || !backward.has(p)).length;
   if (stranded) notes.push("Not every store can reach every other store.");
 
-  return { pieces, notes, counts: { stores, security, escalators: esc, tunnelPairs, hallsApart, halls: hallCount(), emptyHalls, unusedEscalatorEnds, stranded } };
+  return { pieces, notes, counts: { stores, security, bigStores, escalators: esc, tunnelPairs, hallsApart, halls: hallCount(), emptyHalls, unusedEscalatorEnds, stranded } };
 }
 
 // ---------- rendering: printed-tile look ----------
@@ -764,6 +808,7 @@ function run(starter) {
     stores: readCount("numStores", 26),
     escalators: readCount("numEscalators", 8),
     tunnelPairs: readCount("numTunnelPairs", 3),
+    lockBigStores: document.getElementById("lockBigStores").checked,
     starter: false,
   };
   let result;
@@ -787,7 +832,7 @@ function run(starter) {
       for (let k = 0; k < REDRAWS; k++) {
         const r = generate(k ? seed + "~" + k : seed, opts);
         result = r;
-        const short = r.counts.stores < opts.stores || r.counts.escalators < opts.escalators
+        const short = r.counts.stores < opts.stores || r.counts.bigStores < 4 || r.counts.escalators < opts.escalators
           || r.counts.tunnelPairs < opts.tunnelPairs || r.counts.unusedEscalatorEnds > 0
           || r.counts.stranded > 0;
         if (short) continue;
@@ -807,9 +852,27 @@ function run(starter) {
   wrap.innerHTML = "";
   wrap.appendChild(render(result, seed));
   const c = result.counts;
-  let html = `<b>Seed:</b> ${seed} &nbsp; 2 plazas (${c.hallsApart} halls apart), ${plural(c.halls, "hall")}, 4 big stores, ${plural(c.stores, "store")}, ${plural(c.security, "security room")}, ${plural(c.escalators, "escalator")}, ${plural(c.tunnelPairs, "tunnel pair")}.`;
+  let html = `<b>Seed:</b> ${seed} &nbsp; 2 plazas (${c.hallsApart} halls apart), ${plural(c.halls, "hall")}, ${plural(c.bigStores, "big store")}, ${plural(c.stores, "store")}, ${plural(c.security, "security room")}, ${plural(c.escalators, "escalator")}, ${plural(c.tunnelPairs, "tunnel pair")}.`;
   if (result.notes.length) html += "<br><b>Notes:</b> " + result.notes.join(" ");
   document.getElementById("summary").innerHTML = html;
+  // Generate stays off until a setting changes from what is on the board.
+  // After the starter mall the boxes describe a different map, so it stays on.
+  lastGenerated = starter ? null : settingsNow();
+  refreshGenerateButton();
+}
+
+const SETTING_IDS = ["seed", "numHalls", "numStores", "numEscalators", "numTunnelPairs", "lockBigStores"];
+const settingsNow = () => SETTING_IDS.map(id => {
+  const box = document.getElementById(id);
+  return box.type === "checkbox" ? box.checked : box.value;
+}).join("|");
+let lastGenerated = null;
+function refreshGenerateButton() {
+  document.getElementById("generate").disabled = lastGenerated !== null && settingsNow() === lastGenerated;
+}
+for (const id of SETTING_IDS) {
+  document.getElementById(id).addEventListener("input", refreshGenerateButton);
+  document.getElementById(id).addEventListener("change", refreshGenerateButton);
 }
 
 document.getElementById("generate").addEventListener("click", () => run());
