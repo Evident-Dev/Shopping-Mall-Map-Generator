@@ -37,7 +37,7 @@ A seed is any text. The same seed and settings always produce the same map, so s
 - **One per long side.** No more than one hall may attach anywhere along a given hall's long side.
 - **Plazas.** A hall may only touch a plaza with its short end. A hall lying flat along a plaza edge is never placed, because it removes storefronts instead of adding them.
 - **Mirroring.** When a spur is placed, its left/right mirror is also placed if that spot is empty, legal, and the hall count allows it.
-- **No empty halls.** Every hall must end up with at least one store or the security room on one of its sides. Escalators are exempt because nothing can attach to them. For a given hall count several redraws are tried and the tightest one is kept: fewest free storefronts left over, then fewest empty halls.
+- **No empty halls.** Every hall must end up with at least one store or the security room on one of its sides; a map with a store-less hall is rejected and earns more redraws at the same count. Escalators are exempt because nothing can attach to them. Among clean redraws the tightest is kept: fewest free storefronts left over. Only when no count within a few of the first near-miss passes clean is the attempt with the fewest empty halls kept, and the prune pass still gets to remove those halls.
 
 ### Stores and security
 
