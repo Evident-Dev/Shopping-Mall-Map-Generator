@@ -54,12 +54,6 @@
   .controls button:disabled { background: #aaa; cursor: default; filter: none; }
   #board-wrap { padding: 4px 20px 12px; overflow-x: auto; }
   svg { border: 1px solid #ccc; border-radius: 8px; display: block; }
-  .legend {
-    display: flex; flex-wrap: wrap; gap: 14px;
-    padding: 0 20px 10px; font-size: 13px;
-  }
-  .legend span { display: inline-flex; align-items: center; gap: 6px; }
-  .legend i { width: 16px; height: 16px; border-radius: 3px; display: inline-block; }
   #summary { padding: 0 20px 24px; font-size: 13px; color: #555; max-width: 900px; }
 </style>
 </head>
@@ -100,18 +94,6 @@
   <button id="randomize">Generate new seed</button>
   <button id="starter" class="secondary">Starter mall</button>
   <button id="save" class="secondary">Save</button>
-</div>
-
-<div class="legend">
-  <span><i style="background:#8f5fae"></i>Plaza 4&times;4</span>
-  <span><i style="background:#2e2b3f"></i>Big Store 2&times;4 (start)</span>
-  <span><i style="background:#3a3650"></i>Store 2&times;1</span>
-  <span><i style="background:#7a5fae"></i>Hallway 2&times;1</span>
-  <span><i style="background:#4f2e2e"></i>Security Room 2&times;1</span>
-  <span><i style="background:#26232e;border:1px solid #e8a33d"></i>Escalator 2&times;1 (one-way)</span>
-  <span><i style="background:#33303e"></i>Tunnel 1&times;1 (paired)</span>
-  <span><i style="background:var(--open)"></i>Open edge</span>
-  <span><i style="background:var(--wall)"></i>Wall edge</span>
 </div>
 
 <div id="board-wrap"></div>
