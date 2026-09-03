@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Mall Map Generator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alfa+Slab+One&family=IBM+Plex+Mono:wght@400;600&family=Orbitron:wght@500;700&display=swap">
 <style>
   :root {
     --bg: #f4f1ea;
@@ -33,6 +36,10 @@
     padding: 6px 8px; font-size: 14px;
     border: 1px solid #bbb; border-radius: 6px; width: 100px; background: #fff;
   }
+  .controls select {
+    padding: 6px 8px; font-size: 14px;
+    border: 1px solid #bbb; border-radius: 6px; background: #fff;
+  }
   .controls button {
     padding: 8px 16px; font-size: 14px; font-weight: 700;
     border: none; border-radius: 6px; cursor: pointer;
@@ -46,7 +53,7 @@
   .controls button:hover { filter: brightness(1.1); }
   .controls button:disabled { background: #aaa; cursor: default; filter: none; }
   #board-wrap { padding: 4px 20px 12px; overflow-x: auto; }
-  svg { background: #1c1a22; border: 1px solid #ccc; border-radius: 8px; display: block; }
+  svg { border: 1px solid #ccc; border-radius: 8px; display: block; }
   .legend {
     display: flex; flex-wrap: wrap; gap: 14px;
     padding: 0 20px 10px; font-size: 13px;
@@ -80,6 +87,14 @@
   </label>
   <label style="flex-direction:row;align-items:center;gap:6px;padding-bottom:8px">
     <input type="checkbox" id="lockBigStores" style="width:auto"> Lock large store to plaza
+  </label>
+  <label>Theme
+    <select id="theme">
+      <option value="original">Original</option>
+      <option value="matte">Matte</option>
+      <option value="blueprint">Blueprint</option>
+      <option value="neon">Neon</option>
+    </select>
   </label>
   <button id="generate">Generate</button>
   <button id="randomize">Generate new seed</button>
@@ -819,42 +834,274 @@ function generate(seedText, settings) {
   };
 }
 
-// ---------- rendering: printed-tile look ----------
-const FLOOR_COLORS = {
-  plaza: "#8f5fae",
-  hall: "#7a5fae",
-  escalator: "#26232e",
-  store: "#3a3650",
-  bigstore: "#2e2b3f",
-  security: "#4f2e2e",
-  tunnel: "#33303e",
-};
+// ---------- rendering ----------
+// Every theme draws the same pieces. A theme supplies the board color, any
+// SVG defs it needs (patterns, filters), and a function that returns the SVG
+// markup for one piece. render() lays the pieces out into one SVG.
 const EDGE_THICKNESS = 5; // border strip thickness in px
-const OPEN_EDGE_COLOR = "#3d55c9";
-const WALL_EDGE_COLOR = "#d63c3c";
-const RAIL_COLOR = "#e8a33d";
-const BOARD_BACKGROUND = "#1c1a22";
 
-function svgElement(name, attributes) {
-  const element = document.createElementNS("http://www.w3.org/2000/svg", name);
-  for (const attribute in attributes) element.setAttribute(attribute, attributes[attribute]);
-  return element;
+function escapeText(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+}
+// the four border strips of a piece, colored by whether each side is open
+function edgeStrips(piece, left, top, width, height, thickness, colorFor) {
+  return [
+    `<rect x="${left}" y="${top}" width="${width}" height="${thickness}" fill="${colorFor("top")}"/>`,
+    `<rect x="${left}" y="${top + height - thickness}" width="${width}" height="${thickness}" fill="${colorFor("bottom")}"/>`,
+    `<rect x="${left}" y="${top}" width="${thickness}" height="${height}" fill="${colorFor("left")}"/>`,
+    `<rect x="${left + width - thickness}" y="${top}" width="${thickness}" height="${height}" fill="${colorFor("right")}"/>`,
+  ].join("");
+}
+// a triangle (closed) or chevron (open) pointing the escalator's way
+function arrowPath(direction, x, y, size, closed) {
+  const end = closed ? " Z" : "";
+  if (direction === "right") return `M ${x - size} ${y - size} L ${x + size} ${y} L ${x - size} ${y + size}${end}`;
+  if (direction === "left")  return `M ${x + size} ${y - size} L ${x - size} ${y} L ${x + size} ${y + size}${end}`;
+  if (direction === "down")  return `M ${x - size} ${y - size} L ${x} ${y + size} L ${x + size} ${y - size}${end}`;
+  return `M ${x - size} ${y + size} L ${x} ${y - size} L ${x + size} ${y + size}${end}`;
+}
+// arrow centers spread along an escalator's long axis
+function arrowCenters(piece, left, top, width, height, fractions) {
+  const horizontal = piece.width === 2;
+  return fractions.map(fraction => horizontal
+    ? [left + width * fraction, top + height / 2]
+    : [left + width / 2, top + height * fraction]);
+}
+// two rails along the long sides of an escalator
+function escalatorRails(piece, left, top, width, height, inset, thickness, color) {
+  const horizontal = piece.width === 2;
+  if (horizontal) return [
+    `<rect x="${left + inset}" y="${top + 9}" width="${width - inset * 2}" height="${thickness}" fill="${color}"/>`,
+    `<rect x="${left + inset}" y="${top + height - 9 - thickness}" width="${width - inset * 2}" height="${thickness}" fill="${color}"/>`,
+  ].join("");
+  return [
+    `<rect x="${left + 9}" y="${top + inset}" width="${thickness}" height="${height - inset * 2}" fill="${color}"/>`,
+    `<rect x="${left + width - 9 - thickness}" y="${top + inset}" width="${thickness}" height="${height - inset * 2}" fill="${color}"/>`,
+  ].join("");
+}
+// text centered in a piece, turned sideways for a long name in a tall piece
+function centeredLabel(piece, centerX, centerY, fontSize, attributes) {
+  const vertical = piece.height > piece.width && piece.name.length > 2;
+  const transform = vertical ? ` transform="rotate(-90 ${centerX} ${centerY})"` : "";
+  return `<text x="${centerX}" y="${centerY + fontSize / 3}" text-anchor="middle" font-size="${fontSize}" ${attributes}${transform}>${escapeText(piece.name)}</text>`;
 }
 
-// pixel-mosaic floor like the printed tiles
-function drawMosaic(svg, left, top, width, height, color, random) {
-  const step = 10;
-  for (let y = top; y < top + height; y += step)
-    for (let x = left; x < left + width; x += step) {
-      const shade = (random() - 0.5) * 0.25;
-      svg.appendChild(svgElement("rect", {
-        x, y, width: Math.min(step, left + width - x), height: Math.min(step, top + height - y),
-        fill: color, opacity: 0.85 + shade,
-      }));
-    }
-}
+const THEMES = {
+  original: {
+    label: "Original",
+    board: "#1c1a22",
+    floors: { plaza: "#8f5fae", hall: "#7a5fae", escalator: "#26232e", store: "#3a3650", bigstore: "#2e2b3f", security: "#4f2e2e", tunnel: "#33303e" },
+    defs: "",
+    piece(piece, left, top, width, height, random) {
+      const openSides = piece.openSides || [];
+      const parts = [];
+      parts.push(edgeStrips(piece, left, top, width, height, EDGE_THICKNESS, side => openSides.includes(side) ? "#3d55c9" : "#d63c3c"));
+      // pixel-mosaic floor like the printed tiles
+      const step = 10;
+      const floorLeft = left + EDGE_THICKNESS, floorTop = top + EDGE_THICKNESS;
+      const floorWidth = width - EDGE_THICKNESS * 2, floorHeight = height - EDGE_THICKNESS * 2;
+      for (let y = floorTop; y < floorTop + floorHeight; y += step)
+        for (let x = floorLeft; x < floorLeft + floorWidth; x += step) {
+          const shade = (random() - 0.5) * 0.25;
+          parts.push(`<rect x="${x}" y="${y}" width="${Math.min(step, floorLeft + floorWidth - x)}" height="${Math.min(step, floorTop + floorHeight - y)}" fill="${this.floors[piece.type]}" opacity="${0.85 + shade}"/>`);
+        }
+      const centerX = left + width / 2, centerY = top + height / 2;
+      if (piece.type === "plaza") {
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="26" fill="#b08d57" stroke="#7a5f38" stroke-width="3"/>`);
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="16" fill="#3f6b3a"/>`);
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="7" fill="#b08d57"/>`);
+      }
+      if (piece.type === "escalator") {
+        parts.push(escalatorRails(piece, left, top, width, height, EDGE_THICKNESS + 2, 3, "#e8a33d"));
+        for (const [x, y] of arrowCenters(piece, left, top, width, height, [0.3, 0.7]))
+          parts.push(`<path d="${arrowPath(piece.direction, x, y, 8, true)}" fill="#eee" stroke="#999" stroke-width="1"/>`);
+      }
+      if (piece.number) {
+        parts.push(`<text x="${left + width - EDGE_THICKNESS - 2}" y="${top + EDGE_THICKNESS + 9}" text-anchor="end" font-size="9" font-weight="700" fill="#f0ede4" font-family="system-ui, sans-serif">${piece.number}</text>`);
+      }
+      if (piece.name) {
+        const fontSize = piece.type === "bigstore" ? 26 : piece.type === "tunnel" ? 16 : 9;
+        parts.push(centeredLabel(piece, centerX, centerY, fontSize, `font-weight="700" fill="#f0ede4" font-family="system-ui, sans-serif"`));
+      }
+      return parts.join("");
+    },
+  },
 
-function render(result, seedText) {
+  matte: {
+    label: "Matte",
+    board: "#e8e0cf",
+    floors: { plaza: "#c9906e", hall: "#dcc79f", escalator: "#4a4740", store: "#5b606c", bigstore: "#3b4252", security: "#8a3f3f", tunnel: "#7a6f60" },
+    ink: "#2a2420",
+    font: "'Alfa Slab One', Georgia, serif",
+    defs: `<pattern id="halftone" width="6" height="6" patternUnits="userSpaceOnUse"><circle cx="3" cy="3" r="0.9" fill="#2a2420" opacity="0.18"/></pattern>`,
+    piece(piece, left, top, width, height) {
+      const openSides = piece.openSides || [];
+      const band = 6;
+      const parts = [];
+      parts.push(`<rect x="${left}" y="${top}" width="${width}" height="${height}" fill="${this.floors[piece.type]}"/>`);
+      parts.push(`<rect x="${left}" y="${top}" width="${width}" height="${height}" fill="url(#halftone)"/>`);
+      parts.push(edgeStrips(piece, left, top, width, height, band, side => openSides.includes(side) ? "#2f5aa8" : "#c0392b"));
+      // ink outline and an inner keyline so the tile reads as a printed chit
+      parts.push(`<rect x="${left + 1}" y="${top + 1}" width="${width - 2}" height="${height - 2}" fill="none" stroke="${this.ink}" stroke-width="2"/>`);
+      parts.push(`<rect x="${left + band}" y="${top + band}" width="${width - band * 2}" height="${height - band * 2}" fill="none" stroke="${this.ink}" stroke-width="1" opacity="0.5"/>`);
+      const centerX = left + width / 2, centerY = top + height / 2;
+      if (piece.type === "plaza") {
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="30" fill="#e8e0cf" stroke="${this.ink}" stroke-width="2"/>`);
+        for (let petal = 0; petal < 8; petal++) {
+          const angle = (Math.PI * 2 * petal) / 8;
+          const petalX = (centerX + Math.cos(angle) * 17).toFixed(1), petalY = (centerY + Math.sin(angle) * 17).toFixed(1);
+          parts.push(`<ellipse cx="${petalX}" cy="${petalY}" rx="5" ry="9" transform="rotate(${(angle * 180 / Math.PI + 90).toFixed(1)} ${petalX} ${petalY})" fill="#6f8f5a" stroke="${this.ink}" stroke-width="1"/>`);
+        }
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="8" fill="#2f5aa8" stroke="${this.ink}" stroke-width="1.5"/>`);
+      }
+      if (piece.type === "escalator") {
+        parts.push(`<rect x="${left + band + 3}" y="${top + band + 3}" width="${width - band * 2 - 6}" height="${height - band * 2 - 6}" fill="#e6c27a" stroke="${this.ink}" stroke-width="1.5"/>`);
+        for (const [x, y] of arrowCenters(piece, left, top, width, height, [0.28, 0.5, 0.72]))
+          parts.push(`<path d="${arrowPath(piece.direction, x, y, 6, false)}" fill="none" stroke="${this.ink}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`);
+      }
+      if (piece.type === "tunnel") {
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="11" fill="${this.ink}"/>`);
+      }
+      if (piece.number) {
+        parts.push(`<rect x="${left + width - band - 12}" y="${top + band + 1}" width="11" height="10" rx="1" fill="#e8e0cf" stroke="${this.ink}" stroke-width="0.8"/>`);
+        parts.push(`<text x="${left + width - band - 6.5}" y="${top + band + 9}" text-anchor="middle" font-size="7.5" fill="${this.ink}" font-family="${this.font}">${piece.number}</text>`);
+      }
+      if (piece.name) {
+        const fontSize = piece.type === "bigstore" ? 26 : piece.type === "tunnel" ? 14 : 8;
+        parts.push(centeredLabel(piece, centerX, centerY, fontSize, `fill="#f3e9d6" font-family="${this.font}"`));
+      }
+      return parts.join("");
+    },
+  },
+
+  blueprint: {
+    label: "Blueprint",
+    board: "#12315a",
+    line: "#d6e8ff",
+    font: "'IBM Plex Mono', Consolas, monospace",
+    floors: { plaza: "rgba(214,232,255,0.10)", hall: "rgba(214,232,255,0.16)", escalator: "rgba(214,232,255,0.05)", store: "rgba(0,0,0,0.18)", bigstore: "rgba(0,0,0,0.26)", security: "rgba(255,120,120,0.16)", tunnel: "rgba(0,0,0,0.3)" },
+    defs: `<pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="#d6e8ff" stroke-width="0.7" opacity="0.35"/></pattern>`
+      + `<pattern id="paper" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="#d6e8ff" stroke-width="0.4" opacity="0.25"/></pattern>`,
+    background(x, y, width, height) {
+      return `<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="url(#paper)"/>`;
+    },
+    piece(piece, left, top, width, height) {
+      const openSides = piece.openSides || [];
+      const line = this.line;
+      const parts = [];
+      parts.push(`<rect x="${left}" y="${top}" width="${width}" height="${height}" fill="${this.floors[piece.type]}"/>`);
+      if (piece.type === "store" || piece.type === "bigstore" || piece.type === "security") {
+        parts.push(`<rect x="${left + 3}" y="${top + 3}" width="${width - 6}" height="${height - 6}" fill="url(#hatch)"/>`);
+      }
+      // walls are a solid double line, open edges a dashed single line
+      const inset = 2;
+      const edges = {
+        top: [left, top + inset, left + width, top + inset, 0, 3],
+        bottom: [left, top + height - inset, left + width, top + height - inset, 0, -3],
+        left: [left + inset, top, left + inset, top + height, 3, 0],
+        right: [left + width - inset, top, left + width - inset, top + height, -3, 0],
+      };
+      for (const side of ["top", "bottom", "left", "right"]) {
+        const [x1, y1, x2, y2, offsetX, offsetY] = edges[side];
+        if (openSides.includes(side)) {
+          parts.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${line}" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.9"/>`);
+        } else {
+          parts.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${line}" stroke-width="2"/>`);
+          parts.push(`<line x1="${x1 + offsetX}" y1="${y1 + offsetY}" x2="${x2 + offsetX}" y2="${y2 + offsetY}" stroke="${line}" stroke-width="0.8"/>`);
+        }
+      }
+      const centerX = left + width / 2, centerY = top + height / 2;
+      if (piece.type === "plaza") {
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="30" fill="none" stroke="${line}" stroke-width="1.2"/>`);
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="18" fill="none" stroke="${line}" stroke-width="0.8" stroke-dasharray="2 2"/>`);
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="5" fill="${line}"/>`);
+        parts.push(`<line x1="${centerX - 36}" y1="${centerY}" x2="${centerX + 36}" y2="${centerY}" stroke="${line}" stroke-width="0.6" opacity="0.6"/>`);
+        parts.push(`<line x1="${centerX}" y1="${centerY - 36}" x2="${centerX}" y2="${centerY + 36}" stroke="${line}" stroke-width="0.6" opacity="0.6"/>`);
+      }
+      if (piece.type === "escalator") {
+        const horizontal = piece.width === 2;
+        parts.push(escalatorRails(piece, left, top, width, height, 8, 1, line));
+        // treads across the long axis, then one arrow the full length
+        if (horizontal) {
+          for (let x = left + 12; x < left + width - 10; x += 8)
+            parts.push(`<line x1="${x}" y1="${top + 12}" x2="${x + 3}" y2="${top + height - 12}" stroke="${line}" stroke-width="0.6" opacity="0.6"/>`);
+        } else {
+          for (let y = top + 12; y < top + height - 10; y += 8)
+            parts.push(`<line x1="${left + 12}" y1="${y}" x2="${left + width - 12}" y2="${y + 3}" stroke="${line}" stroke-width="0.6" opacity="0.6"/>`);
+        }
+        const tailX = horizontal ? (piece.direction === "right" ? left + 14 : left + width - 14) : centerX;
+        const tailY = horizontal ? centerY : (piece.direction === "down" ? top + 14 : top + height - 14);
+        const headX = horizontal ? (piece.direction === "right" ? left + width - 14 : left + 14) : centerX;
+        const headY = horizontal ? centerY : (piece.direction === "down" ? top + height - 14 : top + 14);
+        parts.push(`<line x1="${tailX}" y1="${tailY}" x2="${headX}" y2="${headY}" stroke="${line}" stroke-width="1.6" stroke-linecap="round"/>`);
+        parts.push(`<path d="${arrowPath(piece.direction, headX, headY, 4, false)}" fill="none" stroke="${line}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`);
+      }
+      if (piece.type === "tunnel") {
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="12" fill="none" stroke="${line}" stroke-width="1.2"/>`);
+      }
+      if (piece.number) {
+        parts.push(`<text x="${left + width - 6}" y="${top + 12}" text-anchor="end" font-size="7.5" fill="${line}" font-family="${this.font}">${String(piece.number).padStart(2, "0")}</text>`);
+      }
+      if (piece.name) {
+        const fontSize = piece.type === "bigstore" ? 24 : piece.type === "tunnel" ? 12 : 7.5;
+        parts.push(centeredLabel(piece, centerX, centerY, fontSize, `fill="${line}" font-family="${this.font}" letter-spacing="1"`));
+      }
+      return parts.join("");
+    },
+  },
+
+  neon: {
+    label: "Neon",
+    board: "#0b0a12",
+    font: "'Orbitron', Verdana, sans-serif",
+    floors: { plaza: "#3a2358", hall: "#2c1f4a", escalator: "#141220", store: "#1a1830", bigstore: "#15132a", security: "#2e1420", tunnel: "#111020" },
+    defs: `<filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="2.2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`
+      + `<pattern id="grain" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="1" height="1" fill="#ffffff" opacity="0.06"/><rect x="2" y="2" width="1" height="1" fill="#ffffff" opacity="0.04"/></pattern>`,
+    piece(piece, left, top, width, height) {
+      const openSides = piece.openSides || [];
+      const parts = [];
+      parts.push(`<rect x="${left}" y="${top}" width="${width}" height="${height}" fill="${this.floors[piece.type]}"/>`);
+      parts.push(`<rect x="${left}" y="${top}" width="${width}" height="${height}" fill="url(#grain)"/>`);
+      // inset glowing bars instead of full-width strips
+      const bar = 3, inset = 3;
+      const bars = {
+        top: [left + inset, top + inset, width - inset * 2, bar],
+        bottom: [left + inset, top + height - inset - bar, width - inset * 2, bar],
+        left: [left + inset, top + inset, bar, height - inset * 2],
+        right: [left + width - inset - bar, top + inset, bar, height - inset * 2],
+      };
+      for (const side of ["top", "bottom", "left", "right"]) {
+        const [x, y, barWidth, barHeight] = bars[side];
+        parts.push(`<rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="1.5" fill="${openSides.includes(side) ? "#5d8cff" : "#ff4d6a"}" filter="url(#glow)"/>`);
+      }
+      const centerX = left + width / 2, centerY = top + height / 2;
+      if (piece.type === "plaza") {
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="28" fill="none" stroke="#ffb547" stroke-width="2" filter="url(#glow)"/>`);
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="17" fill="none" stroke="#5df2c8" stroke-width="1.5" filter="url(#glow)"/>`);
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="6" fill="#ffb547" filter="url(#glow)"/>`);
+      }
+      if (piece.type === "escalator") {
+        for (const [x, y] of arrowCenters(piece, left, top, width, height, [0.3, 0.5, 0.7]))
+          parts.push(`<path d="${arrowPath(piece.direction, x, y, 6, false)}" fill="none" stroke="#ffb547" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>`);
+      }
+      if (piece.type === "tunnel") {
+        parts.push(`<circle cx="${centerX}" cy="${centerY}" r="12" fill="none" stroke="#5df2c8" stroke-width="1.5" filter="url(#glow)"/>`);
+      }
+      if (piece.number) {
+        parts.push(`<text x="${left + width - 8}" y="${top + 15}" text-anchor="end" font-size="10" font-weight="700" fill="#5df2c8" font-family="${this.font}" filter="url(#glow)">${piece.number}</text>`);
+      }
+      if (piece.name) {
+        const fontSize = piece.type === "bigstore" ? 24 : piece.type === "tunnel" ? 13 : 7;
+        const fill = piece.type === "security" ? "#ff4d6a" : "#f4f0ff";
+        parts.push(centeredLabel(piece, centerX, centerY, fontSize, `font-weight="700" fill="${fill}" font-family="${this.font}" letter-spacing="1" filter="url(#glow)"`));
+      }
+      return parts.join("");
+    },
+  },
+};
+
+function render(result, seedText, themeKey) {
+  const theme = THEMES[themeKey] || THEMES.original;
   const random = makeRandom(hashSeed(seedText + ":art"));
   // crop the board to the map with a fixed margin on every side
   const MARGIN = 20;
@@ -865,92 +1112,20 @@ function render(result, seedText) {
   }
   const boardWidth = (maxX - minX) * CELL_SIZE + MARGIN * 2;
   const boardHeight = (maxY - minY) * CELL_SIZE + MARGIN * 2;
-  const svg = svgElement("svg", {
-    width: boardWidth, height: boardHeight,
-    viewBox: `${minX * CELL_SIZE - MARGIN} ${minY * CELL_SIZE - MARGIN} ${boardWidth} ${boardHeight}`,
-  });
+  const boardLeft = minX * CELL_SIZE - MARGIN, boardTop = minY * CELL_SIZE - MARGIN;
 
   let storeNumber = 0;
-  for (const piece of result.pieces) {
-    const left = piece.x * CELL_SIZE, top = piece.y * CELL_SIZE;
-    const width = piece.width * CELL_SIZE, height = piece.height * CELL_SIZE;
-    const openSides = piece.openSides || [];
-
-    // edge strips: blue = open, red = wall
-    const edgeColor = side => openSides.includes(side) ? OPEN_EDGE_COLOR : WALL_EDGE_COLOR;
-    svg.appendChild(svgElement("rect", { x: left, y: top, width, height: EDGE_THICKNESS, fill: edgeColor("top") }));
-    svg.appendChild(svgElement("rect", { x: left, y: top + height - EDGE_THICKNESS, width, height: EDGE_THICKNESS, fill: edgeColor("bottom") }));
-    svg.appendChild(svgElement("rect", { x: left, y: top, width: EDGE_THICKNESS, height, fill: edgeColor("left") }));
-    svg.appendChild(svgElement("rect", { x: left + width - EDGE_THICKNESS, y: top, width: EDGE_THICKNESS, height, fill: edgeColor("right") }));
-
-    // floor
-    drawMosaic(svg, left + EDGE_THICKNESS, top + EDGE_THICKNESS, width - EDGE_THICKNESS * 2, height - EDGE_THICKNESS * 2, FLOOR_COLORS[piece.type], random);
-
-    // plaza fountain
-    if (piece.type === "plaza") {
-      const centerX = left + width / 2, centerY = top + height / 2;
-      svg.appendChild(svgElement("circle", { cx: centerX, cy: centerY, r: 26, fill: "#b08d57", stroke: "#7a5f38", "stroke-width": 3 }));
-      svg.appendChild(svgElement("circle", { cx: centerX, cy: centerY, r: 16, fill: "#3f6b3a" }));
-      svg.appendChild(svgElement("circle", { cx: centerX, cy: centerY, r: 7, fill: "#b08d57" }));
-    }
-
-    // escalator: orange rails + one-way arrows
-    if (piece.type === "escalator") {
-      const horizontal = piece.width === 2;
-      if (horizontal) {
-        svg.appendChild(svgElement("rect", { x: left + EDGE_THICKNESS + 2, y: top + 9, width: width - EDGE_THICKNESS * 2 - 4, height: 3, fill: RAIL_COLOR }));
-        svg.appendChild(svgElement("rect", { x: left + EDGE_THICKNESS + 2, y: top + height - 12, width: width - EDGE_THICKNESS * 2 - 4, height: 3, fill: RAIL_COLOR }));
-      } else {
-        svg.appendChild(svgElement("rect", { x: left + 9, y: top + EDGE_THICKNESS + 2, width: 3, height: height - EDGE_THICKNESS * 2 - 4, fill: RAIL_COLOR }));
-        svg.appendChild(svgElement("rect", { x: left + width - 12, y: top + EDGE_THICKNESS + 2, width: 3, height: height - EDGE_THICKNESS * 2 - 4, fill: RAIL_COLOR }));
-      }
-      for (const fraction of [0.3, 0.7]) {
-        const arrowX = horizontal ? left + width * fraction : left + width / 2;
-        const arrowY = horizontal ? top + height / 2 : top + height * fraction;
-        const arrowSize = 8;
-        let path;
-        if (piece.direction === "right") path = `M ${arrowX - arrowSize} ${arrowY - arrowSize} L ${arrowX + arrowSize} ${arrowY} L ${arrowX - arrowSize} ${arrowY + arrowSize} Z`;
-        if (piece.direction === "left")  path = `M ${arrowX + arrowSize} ${arrowY - arrowSize} L ${arrowX - arrowSize} ${arrowY} L ${arrowX + arrowSize} ${arrowY + arrowSize} Z`;
-        if (piece.direction === "down")  path = `M ${arrowX - arrowSize} ${arrowY - arrowSize} L ${arrowX} ${arrowY + arrowSize} L ${arrowX + arrowSize} ${arrowY - arrowSize} Z`;
-        if (piece.direction === "up")    path = `M ${arrowX - arrowSize} ${arrowY + arrowSize} L ${arrowX} ${arrowY - arrowSize} L ${arrowX + arrowSize} ${arrowY + arrowSize} Z`;
-        svg.appendChild(svgElement("path", { d: path, fill: "#eee", stroke: "#999", "stroke-width": 1 }));
-      }
-    }
-
+  const pieces = result.pieces.map(piece => {
     // small store number in the top right corner, in placement order
-    if (piece.type === "store") {
-      storeNumber++;
-      const number = svgElement("text", {
-        x: left + width - EDGE_THICKNESS - 2, y: top + EDGE_THICKNESS + 9,
-        "text-anchor": "end",
-        "font-size": 9,
-        "font-weight": 700,
-        fill: "#f0ede4",
-        "font-family": "system-ui, sans-serif",
-      });
-      number.textContent = storeNumber;
-      svg.appendChild(number);
-    }
-
-    // label: big store number, security text, tunnel letter
-    if (piece.name) {
-      const vertical = piece.height > piece.width && piece.name.length > 2;
-      const fontSize = piece.type === "bigstore" ? 26 : piece.type === "tunnel" ? 16 : 9;
-      const centerX = left + width / 2, centerY = top + height / 2;
-      const label = svgElement("text", {
-        x: centerX, y: centerY + fontSize / 3,
-        "text-anchor": "middle",
-        "font-size": fontSize,
-        "font-weight": 700,
-        fill: "#f0ede4",
-        "font-family": "system-ui, sans-serif",
-      });
-      if (vertical) label.setAttribute("transform", `rotate(-90 ${centerX} ${centerY})`);
-      label.textContent = piece.name;
-      svg.appendChild(label);
-    }
-  }
-  return svg;
+    const numbered = piece.type === "store" ? { ...piece, number: ++storeNumber } : piece;
+    return theme.piece(numbered, piece.x * CELL_SIZE, piece.y * CELL_SIZE, piece.width * CELL_SIZE, piece.height * CELL_SIZE, random);
+  }).join("");
+  const background = theme.background ? theme.background(boardLeft, boardTop, boardWidth, boardHeight) : "";
+  const markup = `<svg xmlns="http://www.w3.org/2000/svg" width="${boardWidth}" height="${boardHeight}" viewBox="${boardLeft} ${boardTop} ${boardWidth} ${boardHeight}" style="background: ${theme.board}">`
+    + `<defs>${theme.defs}</defs>${background}${pieces}</svg>`;
+  const holder = document.createElement("div");
+  holder.innerHTML = markup;
+  return holder.firstChild;
 }
 
 // ---------- wiring ----------
@@ -960,6 +1135,16 @@ const STORE_LIMIT = 26, ESCALATOR_LIMIT = 8, TUNNEL_PAIR_LIMIT = 3;
 // how many redraws to try at one hall count, how many more when only a rule
 // failed, and how far the count may climb
 const REDRAW_LIMIT = 12, RULE_REDRAW_LIMIT = 36, HALL_LIMIT = 60;
+
+// the last generated map, redrawn whenever the theme changes
+let lastBoard = null;
+const currentTheme = () => THEMES[document.getElementById("theme").value] || THEMES.original;
+function drawBoard() {
+  if (!lastBoard) return;
+  const boardWrap = document.getElementById("board-wrap");
+  boardWrap.innerHTML = "";
+  boardWrap.appendChild(render(lastBoard.result, lastBoard.seed, document.getElementById("theme").value));
+}
 
 function run(useStarter) {
   const seed = document.getElementById("seed").value || "mall";
@@ -1019,9 +1204,8 @@ function run(useStarter) {
     }
     if (bestFit) result = generate(bestFitSeed, { ...settings, halls: bestFitHalls, prune: true });
   }
-  const boardWrap = document.getElementById("board-wrap");
-  boardWrap.innerHTML = "";
-  boardWrap.appendChild(render(result, seed));
+  lastBoard = { result, seed };
+  drawBoard();
   const counts = result.counts;
   document.getElementById("hallTotal").textContent = counts.halls;
   let summaryHtml = `<b>Seed:</b> ${seed} &nbsp; 2 plazas (${counts.hallsApart} halls apart), ${plural(counts.halls, "hall")}, ${plural(counts.bigStores, "big store")}, ${plural(counts.stores, "store")}, ${plural(counts.security, "security room")}, ${plural(counts.escalators, "escalator")}, ${plural(counts.tunnelPairs, "tunnel pair")}.`;
@@ -1047,6 +1231,7 @@ for (const boxId of SETTING_BOX_IDS) {
   document.getElementById(boxId).addEventListener("change", refreshGenerateButton);
 }
 
+document.getElementById("theme").addEventListener("change", drawBoard);
 document.getElementById("generate").addEventListener("click", () => run());
 document.getElementById("starter").addEventListener("click", () => run(true));
 document.getElementById("randomize").addEventListener("click", () => {
@@ -1064,7 +1249,7 @@ document.getElementById("save").addEventListener("click", () => {
     canvas.width = boardSvg.width.baseVal.value * scale;
     canvas.height = boardSvg.height.baseVal.value * scale;
     const context = canvas.getContext("2d");
-    context.fillStyle = BOARD_BACKGROUND;
+    context.fillStyle = currentTheme().board;
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
     URL.revokeObjectURL(svgUrl);
