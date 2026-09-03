@@ -56,8 +56,8 @@
   main {
     display: grid;
     grid-template-columns: 380px minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) auto;
-    grid-template-areas: "panel board" "actions board";
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    grid-template-areas: "panel board" "actions board" "seed board";
     gap: 0 24px;
     padding: 22px 40px 32px;
     align-items: start;
@@ -71,11 +71,19 @@
   }
   .actions {
     grid-area: actions;
+    display: flex; flex-direction: column;
+    padding: 0 22px 18px;
+    background: var(--card); border: 2px solid var(--edge);
+    border-top: none; border-bottom: none;
+  }
+  .seed-actions {
+    grid-area: seed;
     display: flex; flex-direction: column; gap: 10px;
     padding: 0 22px 22px;
     background: var(--card); border: 2px solid var(--edge); border-radius: 0 0 20px 20px;
     border-top: none;
   }
+  .divider { width: 100%; margin: 0 0 8px; border: 0; border-top: 2px solid var(--edge); }
   .board { grid-area: board; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 
   .field { display: flex; gap: 8px; }
@@ -111,12 +119,17 @@
   .switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 15px; font-weight: 800; }
   .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
   .switch .track {
-    width: 46px; height: 28px; flex: none; padding: 3px;
-    border-radius: 999px; background: var(--edge); transition: background 0.2s;
+    width: 56px; height: 32px; flex: none; padding: 3px; cursor: pointer;
+    border-radius: 999px; border: 2px solid var(--muted); background: var(--field);
+    transition: background 0.2s, border-color 0.2s;
   }
-  .switch .knob { width: 22px; height: 22px; border-radius: 999px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: transform 0.2s; }
-  .switch input:checked + .track { background: var(--brand); }
-  .switch input:checked + .track .knob { transform: translateX(18px); }
+  .switch .knob {
+    display: block; width: 22px; height: 22px; border-radius: 999px; background: var(--muted);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: transform 0.2s, background 0.2s;
+  }
+  .switch input:checked + .track { background: var(--brand); border-color: var(--brand); }
+  .switch input:checked + .track .knob { background: var(--brand-ink); transform: translateX(24px); }
+  .switch input:focus-visible + .track { outline: 2px solid var(--brand); outline-offset: 2px; }
 
   .section-name { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
   .themes { display: flex; gap: 8px; }
@@ -144,8 +157,8 @@
   header .secondary { padding: 0 16px; }
   .secondary:disabled { color: var(--muted); }
   .secondary svg { width: 16px; height: 16px; }
-  .actions .row { display: flex; gap: 10px; }
-  .actions .row .secondary { flex: 1; min-width: 0; }
+  .row { display: flex; gap: 10px; }
+  .row .secondary { flex: 1; min-width: 0; }
 
   .board-card { padding: 18px; background: var(--card); border: 2px solid var(--edge); border-radius: 20px; }
   /* the board fills the column but never taller than the viewport allows; drawBoard sets max-width for that */
@@ -174,12 +187,14 @@
     header .secondary .label { display: none; }
     main {
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto auto auto;
-      grid-template-areas: "board" "panel" "actions";
-      gap: 14px 0;
+      grid-template-rows: auto auto auto auto;
+      grid-template-areas: "board" "panel" "seed" "actions";
+      gap: 0;
       padding: 14px 12px 0;
     }
-    .panel { border-radius: 20px; border-bottom: 2px solid var(--edge); padding: 18px; }
+    .board { margin-bottom: 14px; }
+    .panel { padding: 18px; }
+    .seed-actions { padding: 0 18px 18px; margin-bottom: 14px; }
     .actions {
       position: sticky; bottom: 0; z-index: 1;
       padding: 12px 12px 16px; margin: 0 -12px;
@@ -205,9 +220,6 @@
 
 <main>
   <div class="panel">
-    <div class="field">
-      <input type="text" id="seed" value="mall-1" aria-label="Seed">
-    </div>
     <div class="stepper">
       <div class="name">Stores</div>
       <div class="count">
@@ -253,6 +265,12 @@
   </div>
   <div class="actions">
     <button id="randomize" class="primary">Generate random map</button>
+  </div>
+  <div class="seed-actions">
+    <hr class="divider">
+    <div class="field">
+      <input type="text" id="seed" value="mall-1" aria-label="Seed">
+    </div>
     <div class="row">
       <button id="generate" class="secondary">Generate this seed</button>
       <button id="starter" class="secondary">Starter mall</button>
