@@ -655,6 +655,9 @@ function generate(seedText, settings) {
   while (!settings.starter && countHalls() < settings.halls && growAttempts++ < 80) {
     if (!growSpur(settings.halls)) break;
   }
+  // unlocked big stores take their hall pairs before any spur turns into an
+  // escalator, which would close those halls to storefronts
+  if (!settings.starter && !settings.lockBigStores) placeBigStores();
 
   // more escalators than corridor halls: turn spur halls into escalators,
   // but only ones with nothing hall-like on their long sides, so closing
@@ -714,7 +717,6 @@ function generate(seedText, settings) {
     escalatorCount++;
   }
 
-  if (!settings.starter && !settings.lockBigStores) placeBigStores();
 
   const ROOM_TYPES = ["store", "security", "bigstore"];
   const hasStorefront = hall => ALL_SIDES.some(side =>
@@ -1317,19 +1319,23 @@ function run(useStarter) {
     }
   } else {
     // search up from the smallest skeleton one hall at a time. More halls
-    // only help when something did not fit; a rule failure (stranded pieces,
-    // an escalator end leading nowhere, a hall with no store) just earns more
-    // redraws at the same count. Among clean redraws the tightest board wins:
-    // fewest free storefronts. A map with a store-less hall is kept only as a
-    // fallback, and the climb stops a few counts past it, since more halls
-    // rarely cure an empty one. The winner is then regenerated with the
-    // prune pass on, which can still remove a fallback's empty halls.
+    // only help when stores, escalators, or tunnels did not fit; a rule
+    // failure (stranded pieces, an escalator end leading nowhere, a hall
+    // with no store, big stores out of room, which more halls only crowd)
+    // just earns more redraws at the same count. Among clean redraws the
+    // tightest board wins: fewest free storefronts. A map with a store-less
+    // hall is kept only as a fallback, and the climb stops a few counts past
+    // it, since more halls rarely cure an empty one. The winner is then
+    // regenerated with the prune pass on, which can still remove a
+    // fallback's empty halls. If nothing ever fits, the attempt that came
+    // closest is shown with its notes.
     const tighter = (counts, other) => counts.freeStoreSpots < other.freeStoreSpots;
     const lessEmpty = (counts, other) => counts.emptyHalls < other.emptyHalls
       || (counts.emptyHalls === other.emptyHalls && counts.freeStoreSpots < other.freeStoreSpots);
     const searchSettings = { ...settings, prune: false };
     let bestFit = null, bestFitSeed = null, bestFitHalls = null;
     let fallback = null, fallbackSeed = null, fallbackHalls = null;
+    let closest = null, closestSeed = null, closestHalls = null, closestGap = Infinity;
     const worthClimbing = halls => halls <= HALL_LIMIT && (!fallback || halls <= fallbackHalls + FALLBACK_CLIMB);
     for (let halls = settings.halls; worthClimbing(halls) && !bestFit; halls++) {
       searchSettings.halls = halls;
@@ -1339,9 +1345,13 @@ function run(useStarter) {
         const attempt = generate(attemptSeed, searchSettings);
         result = attempt;
         const counts = attempt.counts;
-        const lacksCapacity = counts.stores < settings.stores || counts.bigStores < 4
+        const gap = (settings.stores - counts.stores) + (4 - counts.bigStores) * 4
+          + (settings.escalators - counts.escalators) + (settings.tunnelPairs - counts.tunnelPairs) * 2
+          + counts.unusedEscalatorEnds + counts.stranded + counts.detachedHalls + counts.emptyHalls;
+        if (gap < closestGap) { closest = attempt; closestSeed = attemptSeed; closestHalls = halls; closestGap = gap; }
+        const lacksCapacity = counts.stores < settings.stores
           || counts.escalators < settings.escalators || counts.tunnelPairs < settings.tunnelPairs;
-        const breaksRules = counts.unusedEscalatorEnds > 0 || counts.stranded > 0 || counts.detachedHalls > 0;
+        const breaksRules = counts.bigStores < 4 || counts.unusedEscalatorEnds > 0 || counts.stranded > 0 || counts.detachedHalls > 0;
         if (lacksCapacity) continue;
         if (breaksRules) { redrawBudget = RULE_REDRAW_LIMIT; continue; }
         if (counts.emptyHalls > 0) {
@@ -1358,6 +1368,10 @@ function run(useStarter) {
     }
     if (bestFit) result = generate(bestFitSeed, { ...settings, halls: bestFitHalls, prune: true });
     else if (fallback) result = generate(fallbackSeed, { ...settings, halls: fallbackHalls, prune: true });
+    else if (closest) {
+      result = generate(closestSeed, { ...settings, halls: closestHalls, prune: true });
+      result.notes.unshift("Nothing fit every setting for this seed; this came closest.");
+    }
   }
   lastBoard = { result, seed };
   drawBoard();
