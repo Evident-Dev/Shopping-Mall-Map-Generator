@@ -236,11 +236,11 @@ function generate(seedText, settings) {
   // starter mall: two per plaza, top and bottom. Otherwise they are placed
   // once the halls exist, see placeBigStores below.
   let bigStoreCount = 0;
-  function placeBigStore(spot) {
+  function placeBigStore(spot, name) {
     bigStoreCount++;
     place(grid, pieces, {
       type: "bigstore", x: spot.x, y: spot.y, width: spot.width, height: spot.height,
-      openSides: [spot.side], name: String(bigStoreCount),
+      openSides: [spot.side], name: name || String(bigStoreCount),
     });
   }
   if (settings.starter) {
@@ -571,46 +571,50 @@ function generate(seedText, settings) {
   // yet comes before one that already has one
   const storeSpotRank = spot => spot.host.depth * 2 + (spot.host.type === "hall" && !hasStorefront(spot.host) ? 0 : 1);
 
-  let storeCount = 0, securityCount = 0, storeAttempts = 0;
-  while ((storeCount < settings.stores || securityCount < 1) && storeAttempts++ < 300) {
-    const spots = shuffle(legalStoreSpots(), random).sort((first, second) => storeSpotRank(first) - storeSpotRank(second));
-    if (!spots.length) break;
-    const spot = spots[0];
-    if (securityCount < 1) {
-      place(grid, pieces, {
-        type: "security", x: spot.x, y: spot.y, width: spot.width, height: spot.height,
-        openSides: [spot.side], name: "SECURITY",
-      });
-      securityCount++;
-    } else if (storeCount + 1 < settings.stores) {
-      // room for two: mirror the store when the mirrored spot is also legal
-      const placed = placeMirroredPair({
-        type: "store", x: spot.x, y: spot.y, width: spot.width, height: spot.height, openSides: [spot.side],
-      });
-      const twin = placed[1];
-      if (twin && (overlapsReserved(twin) || !doorTouchesWalkway({ ...twin, side: twin.openSides[0] }))) {
-        // mirror landed against something that is not a storefront; undo it
-        for (let row = twin.y; row < twin.y + twin.height; row++)
-          for (let column = twin.x; column < twin.x + twin.width; column++)
-            grid[row][column] = null;
-        pieces.splice(pieces.indexOf(twin), 1);
-        placed.pop();
+  let storeCount = 0, securityCount = 0;
+  // place rooms until the targets are met or no legal spot is left
+  function fillStores(targetStores, targetSecurity) {
+    let attempts = 0;
+    while ((storeCount < targetStores || securityCount < targetSecurity) && attempts++ < 300) {
+      const spots = shuffle(legalStoreSpots(), random).sort((first, second) => storeSpotRank(first) - storeSpotRank(second));
+      if (!spots.length) break;
+      const spot = spots[0];
+      if (securityCount < targetSecurity) {
+        place(grid, pieces, {
+          type: "security", x: spot.x, y: spot.y, width: spot.width, height: spot.height,
+          openSides: [spot.side], name: "SECURITY",
+        });
+        securityCount++;
+      } else if (storeCount + 1 < targetStores) {
+        // room for two: mirror the store when the mirrored spot is also legal
+        const placed = placeMirroredPair({
+          type: "store", x: spot.x, y: spot.y, width: spot.width, height: spot.height, openSides: [spot.side],
+        });
+        const twin = placed[1];
+        if (twin && (overlapsReserved(twin) || !doorTouchesWalkway({ ...twin, side: twin.openSides[0] }))) {
+          // mirror landed against something that is not a storefront; undo it
+          removePiece(twin);
+          placed.pop();
+        }
+        storeCount += placed.length;
+      } else {
+        place(grid, pieces, {
+          type: "store", x: spot.x, y: spot.y, width: spot.width, height: spot.height, openSides: [spot.side],
+        });
+        storeCount++;
       }
-      storeCount += placed.length;
-    } else {
-      place(grid, pieces, {
-        type: "store", x: spot.x, y: spot.y, width: spot.width, height: spot.height, openSides: [spot.side],
-      });
-      storeCount++;
     }
   }
+  function removePiece(piece) {
+    for (let row = piece.y; row < piece.y + piece.height; row++)
+      for (let column = piece.x; column < piece.x + piece.width; column++)
+        grid[row][column] = null;
+    pieces.splice(pieces.indexOf(piece), 1);
+  }
+  fillStores(settings.stores, 1);
   if (storeCount < settings.stores) notes.push("Board full: placed " + storeCount + " of " + settings.stores + " stores.");
   if (!settings.starter && countHalls() < settings.halls)
     notes.push("Only " + countHalls() + " of " + settings.halls + " halls fit.");
-
-  // every hall must have a storefront on it
-  const emptyHalls = pieces.filter(piece => piece.type === "hall" && !hasStorefront(piece)).length;
-  if (emptyHalls) notes.push(plural(emptyHalls, "hall") + " with no store.");
 
   // --- 6. access tunnels: lettered pairs A/B/C, mirrored when possible ---
   const placedTunnels = () => pieces.filter(piece => piece.type === "tunnel");
@@ -670,54 +674,147 @@ function generate(seedText, settings) {
     return !!neighbor && (CONNECTORS.includes(neighbor.type) || neighbor.type === "tunnel")
       && (neighbor.openSides || []).includes(OPPOSITE_SIDE[side]);
   };
-  const unusedEscalatorEnds = pieces.filter(piece => piece.type === "escalator")
-    .reduce((total, escalator) => total + openEndsOf(escalator).filter(side => !leadsSomewhere(escalator, side)).length, 0);
-  if (unusedEscalatorEnds) notes.push(plural(unusedEscalatorEnds, "escalator end") + " leading nowhere.");
-
   // every room and walkable piece must reach every other, walking
-  // escalators only in their arrow direction and tunnels twin to twin
+  // escalators only in their arrow direction and tunnels twin to twin.
+  // Returns how many pieces cannot.
   const WALKABLE_OR_ROOM = ["plaza", "hall", "escalator", "tunnel", "store", "bigstore", "security"];
-  const nodes = pieces.filter(piece => WALKABLE_OR_ROOM.includes(piece.type));
   const canLeave = (piece, side) => piece.type !== "escalator" || side === piece.direction;
   const canEnter = (piece, side) => piece.type !== "escalator" || side === OPPOSITE_SIDE[piece.direction];
-  const exitsFrom = new Map(nodes.map(node => [node, []]));
-  for (const node of nodes) {
-    for (const side of node.openSides || []) {
-      if (!canLeave(node, side)) continue;
-      for (const [cellX, cellY] of cellsOutside(node, side)) {
-        const neighbor = pieceAt(grid, cellX, cellY);
-        if (!neighbor || neighbor === node || !exitsFrom.has(neighbor)) continue;
-        if (!(neighbor.openSides || []).includes(OPPOSITE_SIDE[side]) || !canEnter(neighbor, OPPOSITE_SIDE[side])) continue;
-        exitsFrom.get(node).push(neighbor);
+  function countStranded() {
+    const nodes = pieces.filter(piece => WALKABLE_OR_ROOM.includes(piece.type));
+    const exitsFrom = new Map(nodes.map(node => [node, []]));
+    for (const node of nodes) {
+      for (const side of node.openSides || []) {
+        if (!canLeave(node, side)) continue;
+        for (const [cellX, cellY] of cellsOutside(node, side)) {
+          const neighbor = pieceAt(grid, cellX, cellY);
+          if (!neighbor || neighbor === node || !exitsFrom.has(neighbor)) continue;
+          if (!(neighbor.openSides || []).includes(OPPOSITE_SIDE[side]) || !canEnter(neighbor, OPPOSITE_SIDE[side])) continue;
+          exitsFrom.get(node).push(neighbor);
+        }
+      }
+      if (node.type === "tunnel") {
+        const twin = nodes.find(other => other !== node && other.type === "tunnel" && other.name === node.name);
+        if (twin) exitsFrom.get(node).push(twin);
       }
     }
-    if (node.type === "tunnel") {
-      const twin = nodes.find(other => other !== node && other.type === "tunnel" && other.name === node.name);
-      if (twin) exitsFrom.get(node).push(twin);
+    const entriesInto = new Map(nodes.map(node => [node, []]));
+    for (const [node, exits] of exitsFrom) for (const exit of exits) entriesInto.get(exit).push(node);
+    function reachableFrom(start, links) {
+      const seen = new Set([start]);
+      const queue = [start];
+      while (queue.length) {
+        for (const next of links.get(queue.pop())) {
+          if (!seen.has(next)) { seen.add(next); queue.push(next); }
+        }
+      }
+      return seen;
     }
+    const forwardReach = reachableFrom(nodes[0], exitsFrom);
+    const backwardReach = reachableFrom(nodes[0], entriesInto);
+    return nodes.filter(node => !forwardReach.has(node) || !backwardReach.has(node)).length;
   }
-  const entriesInto = new Map(nodes.map(node => [node, []]));
-  for (const [node, exits] of exitsFrom) for (const exit of exits) entriesInto.get(exit).push(node);
-  function reachableFrom(start, links) {
-    const seen = new Set([start]);
-    const queue = [start];
+  // every hall and escalator must hang off the plazas through open edges,
+  // hall to hall, without leaning on a tunnel. Returns how many do not.
+  function countDetachedHalls() {
+    const network = pieces.filter(piece => CONNECTORS.includes(piece.type));
+    const reached = new Set(network.filter(piece => piece.type === "plaza"));
+    const queue = [...reached];
     while (queue.length) {
-      for (const next of links.get(queue.pop())) {
-        if (!seen.has(next)) { seen.add(next); queue.push(next); }
+      const piece = queue.pop();
+      for (const side of piece.openSides || []) {
+        for (const [cellX, cellY] of cellsOutside(piece, side)) {
+          const neighbor = pieceAt(grid, cellX, cellY);
+          if (!neighbor || reached.has(neighbor) || !CONNECTORS.includes(neighbor.type)) continue;
+          if (!(neighbor.openSides || []).includes(OPPOSITE_SIDE[side])) continue;
+          reached.add(neighbor);
+          queue.push(neighbor);
+        }
       }
     }
-    return seen;
+    return network.length - reached.size;
   }
-  const forwardReach = reachableFrom(nodes[0], exitsFrom);
-  const backwardReach = reachableFrom(nodes[0], entriesInto);
-  const stranded = nodes.filter(node => !forwardReach.has(node) || !backwardReach.has(node)).length;
+  // the rule checks on the board as it stands right now
+  function evaluate() {
+    const emptyHalls = pieces.filter(piece => piece.type === "hall" && !hasStorefront(piece)).length;
+    const unusedEscalatorEnds = pieces.filter(piece => piece.type === "escalator")
+      .reduce((total, escalator) => total + openEndsOf(escalator).filter(side => !leadsSomewhere(escalator, side)).length, 0);
+    return {
+      emptyHalls, unusedEscalatorEnds, stranded: countStranded(), detachedHalls: countDetachedHalls(),
+      freeStoreSpots: legalStoreSpots().length,
+    };
+  }
+
+  // --- 7. prune: drop any hall whose rooms can live somewhere else ---
+  // Tried deepest spur first, its mirror alongside it when possible. A
+  // removal sticks only if every room finds a new home and the board still
+  // passes every rule.
+  const doorCells = room => cellsOutside(room, room.openSides[0]);
+  const openingOnto = (types, halls) => pieces.filter(piece => types.includes(piece.type)
+    && doorCells(piece).some(([cellX, cellY]) => halls.includes(pieceAt(grid, cellX, cellY))));
+  function restore(savedPieces) {
+    pieces.length = 0;
+    for (const row of grid) row.fill(null);
+    for (const piece of savedPieces) place(grid, pieces, piece);
+  }
+  function tryRemoving(halls, allowedEmptyHalls) {
+    if (openingOnto(["tunnel"], halls).length) return false;
+    const savedPieces = pieces.slice();
+    const savedStores = storeCount, savedSecurity = securityCount, savedBigStores = bigStoreCount;
+    const rooms = openingOnto(ROOM_TYPES, halls);
+    for (const piece of [...halls, ...rooms]) removePiece(piece);
+    for (const room of rooms) {
+      if (room.type === "store") storeCount--;
+      else if (room.type === "security") securityCount--;
+      else bigStoreCount--;
+    }
+    for (const room of rooms.filter(room => room.type === "bigstore")) {
+      const spots = shuffle(legalBigStoreSpots(), random);
+      if (!spots.length) break;
+      placeBigStore(spots[0], room.name);
+    }
+    fillStores(savedStores, savedSecurity);
+    const everyRoomHomed = storeCount === savedStores && securityCount === savedSecurity && bigStoreCount === savedBigStores;
+    const check = everyRoomHomed ? evaluate() : null;
+    const passes = check && check.stranded === 0 && check.detachedHalls === 0
+      && check.unusedEscalatorEnds === 0 && check.emptyHalls <= allowedEmptyHalls;
+    if (passes) return true;
+    restore(savedPieces);
+    storeCount = savedStores; securityCount = savedSecurity; bigStoreCount = savedBigStores;
+    return false;
+  }
+  if (settings.prune) {
+    let allowedEmptyHalls = evaluate().emptyHalls;
+    let removedAny = true;
+    while (removedAny) {
+      removedAny = false;
+      const candidates = pieces.filter(piece => piece.type === "hall" && piece.depth > 0)
+        .sort((first, second) => second.depth - first.depth || first.y - second.y || first.x - second.x);
+      for (const hall of candidates) {
+        if (!pieces.includes(hall)) continue;
+        const partner = mirrorPartner(hall);
+        const groups = partner && partner.depth > 0 ? [[hall, partner], [hall]] : [[hall]];
+        for (const group of groups) {
+          if (!tryRemoving(group, allowedEmptyHalls)) continue;
+          allowedEmptyHalls = evaluate().emptyHalls;
+          removedAny = true;
+          break;
+        }
+      }
+    }
+  }
+
+  const { emptyHalls, unusedEscalatorEnds, stranded, detachedHalls, freeStoreSpots } = evaluate();
+  if (emptyHalls) notes.push(plural(emptyHalls, "hall") + " with no store.");
+  if (detachedHalls) notes.push(plural(detachedHalls, "hall") + " not connected.");
+  if (unusedEscalatorEnds) notes.push(plural(unusedEscalatorEnds, "escalator end") + " leading nowhere.");
   if (stranded) notes.push("Not every store can reach every other store.");
 
   return {
     pieces, notes,
     counts: {
       stores: storeCount, security: securityCount, bigStores: bigStoreCount, escalators: escalatorCount,
-      tunnelPairs: tunnelPairCount, hallsApart, halls: countHalls(), emptyHalls, unusedEscalatorEnds, stranded,
+      tunnelPairs: tunnelPairCount, hallsApart, halls: countHalls(), emptyHalls, unusedEscalatorEnds, stranded, detachedHalls, freeStoreSpots,
     },
   };
 }
@@ -773,6 +870,7 @@ function render(result, seedText) {
     viewBox: `${minX * CELL_SIZE - MARGIN} ${minY * CELL_SIZE - MARGIN} ${boardWidth} ${boardHeight}`,
   });
 
+  let storeNumber = 0;
   for (const piece of result.pieces) {
     const left = piece.x * CELL_SIZE, top = piece.y * CELL_SIZE;
     const width = piece.width * CELL_SIZE, height = piece.height * CELL_SIZE;
@@ -819,6 +917,21 @@ function render(result, seedText) {
       }
     }
 
+    // small store number in the top right corner, in placement order
+    if (piece.type === "store") {
+      storeNumber++;
+      const number = svgElement("text", {
+        x: left + width - EDGE_THICKNESS - 2, y: top + EDGE_THICKNESS + 9,
+        "text-anchor": "end",
+        "font-size": 9,
+        "font-weight": 700,
+        fill: "#f0ede4",
+        "font-family": "system-ui, sans-serif",
+      });
+      number.textContent = storeNumber;
+      svg.appendChild(number);
+    }
+
     // label: big store number, security text, tunnel letter
     if (piece.name) {
       const vertical = piece.height > piece.width && piece.name.length > 2;
@@ -844,8 +957,9 @@ function render(result, seedText) {
 // first-game layout: fixed settings, whatever the boxes say
 const STARTER_SETTINGS = { halls: 6, stores: 15, escalators: 0, tunnelPairs: 0, starter: true };
 const STORE_LIMIT = 26, ESCALATOR_LIMIT = 8, TUNNEL_PAIR_LIMIT = 3;
-// how many redraws to try at one hall count, and how far the count may climb
-const REDRAW_LIMIT = 12, HALL_LIMIT = 60;
+// how many redraws to try at one hall count, how many more when only a rule
+// failed, and how far the count may climb
+const REDRAW_LIMIT = 12, RULE_REDRAW_LIMIT = 36, HALL_LIMIT = 60;
 
 function run(useStarter) {
   const seed = document.getElementById("seed").value || "mall";
@@ -875,27 +989,35 @@ function run(useStarter) {
       result = generate(seed + "~" + redraw, settings);
     }
   } else {
-    // the box is a minimum: raise it one hall at a time and retry until the
-    // smallest count that fits every store, escalator, and tunnel pair is
-    // found. At each count a few redraws are tried, keeping the one with the
-    // fewest empty halls.
-    const askedHalls = settings.halls;
-    let bestFit = null;
-    for (let halls = askedHalls; halls <= HALL_LIMIT && !bestFit; halls++) {
-      settings.halls = halls;
-      for (let redraw = 0; redraw < REDRAW_LIMIT; redraw++) {
-        const attempt = generate(redraw ? seed + "~" + redraw : seed, settings);
+    // search up from the smallest skeleton one hall at a time. More halls
+    // only help when something did not fit; a rule failure (stranded pieces,
+    // an escalator end leading nowhere) just earns more redraws at the same
+    // count. Among fitting redraws the tightest board wins: fewest free
+    // storefronts, then fewest empty halls. The winner is then regenerated
+    // with the prune pass on.
+    const tighter = (counts, other) => counts.freeStoreSpots < other.freeStoreSpots
+      || (counts.freeStoreSpots === other.freeStoreSpots && counts.emptyHalls < other.emptyHalls);
+    const searchSettings = { ...settings, prune: false };
+    let bestFit = null, bestFitSeed = null, bestFitHalls = null;
+    for (let halls = settings.halls; halls <= HALL_LIMIT && !bestFit; halls++) {
+      searchSettings.halls = halls;
+      let redrawBudget = REDRAW_LIMIT;
+      for (let redraw = 0; redraw < redrawBudget; redraw++) {
+        const attemptSeed = redraw ? seed + "~" + redraw : seed;
+        const attempt = generate(attemptSeed, searchSettings);
         result = attempt;
         const counts = attempt.counts;
-        const fallsShort = counts.stores < settings.stores || counts.bigStores < 4
-          || counts.escalators < settings.escalators || counts.tunnelPairs < settings.tunnelPairs
-          || counts.unusedEscalatorEnds > 0 || counts.stranded > 0;
-        if (fallsShort) continue;
-        if (!bestFit || counts.emptyHalls < bestFit.counts.emptyHalls) bestFit = attempt;
-        if (counts.emptyHalls === 0) break;
+        const lacksCapacity = counts.stores < settings.stores || counts.bigStores < 4
+          || counts.escalators < settings.escalators || counts.tunnelPairs < settings.tunnelPairs;
+        const breaksRules = counts.unusedEscalatorEnds > 0 || counts.stranded > 0 || counts.detachedHalls > 0;
+        if (lacksCapacity) continue;
+        if (breaksRules) { redrawBudget = RULE_REDRAW_LIMIT; continue; }
+        if (!bestFit || tighter(counts, bestFit.counts)) {
+          bestFit = attempt; bestFitSeed = attemptSeed; bestFitHalls = halls;
+        }
       }
     }
-    if (bestFit) result = bestFit;
+    if (bestFit) result = generate(bestFitSeed, { ...settings, halls: bestFitHalls, prune: true });
   }
   const boardWrap = document.getElementById("board-wrap");
   boardWrap.innerHTML = "";

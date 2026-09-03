@@ -17,6 +17,7 @@ A seed is any text. The same seed and settings always produce the same map, so s
 
 - Blue edge = open, red edge = wall.
 - Escalator arrows show the one-way direction.
+- The small number in a store's corner is its placement order, for counting.
 - Tunnels with the same letter connect.
 
 ## Generation rules
@@ -29,13 +30,14 @@ A seed is any text. The same seed and settings always produce the same map, so s
 
 ### Halls
 
-- **Minimum hall count.** Every generation searches up from the smallest possible skeleton (the 4 corridor halls). The hall count is raised by one and the map regenerated until every request fits, so each seed gets its own minimum. The Halls box only displays the total of the kept map.
-- **Connection.** Every spur hall must have at least one side touching a hall, plaza, or escalator, and that neighbour's facing edge must be open (blue). Touching a wall edge does not count.
+- **Minimum hall count.** Every generation searches up from the smallest possible skeleton (the 4 corridor halls). The count is raised by one only when something did not fit: a store, big store, escalator, or tunnel pair. A failure of a rule instead, such as a stranded piece or an escalator end leading nowhere, earns more redraws at the same count rather than more halls. The Halls box only displays the total of the kept map.
+- **Prune.** Once a map passes, every spur hall is tried for removal, deepest first and together with its mirror when possible. Its rooms are moved to other free storefronts and every rule is checked again. The removal sticks only if every room found a home and the map still passes, so no hall survives whose stores could have lived elsewhere.
+- **Connection.** Every spur hall must have at least one side touching a hall, plaza, or escalator, and that neighbour's facing edge must be open (blue). Touching a wall edge does not count. The whole hall network must hang off the plazas this way, hall to hall, without leaning on a tunnel, and that is re-checked whenever a hall is removed.
 - **Long side rule.** Two halls may never touch long side to long side. A hall may attach its short end to another hall's long side, or short end to short end.
 - **One per long side.** No more than one hall may attach anywhere along a given hall's long side.
 - **Plazas.** A hall may only touch a plaza with its short end. A hall lying flat along a plaza edge is never placed, because it removes storefronts instead of adding them.
 - **Mirroring.** When a spur is placed, its left/right mirror is also placed if that spot is empty, legal, and the hall count allows it.
-- **No empty halls.** Every hall must end up with at least one store or the security room on one of its sides. Escalators are exempt because nothing can attach to them. For a given hall count several redraws are tried and the one with the fewest empty halls is kept.
+- **No empty halls.** Every hall must end up with at least one store or the security room on one of its sides. Escalators are exempt because nothing can attach to them. For a given hall count several redraws are tried and the tightest one is kept: fewest free storefronts left over, then fewest empty halls.
 
 ### Stores and security
 
@@ -64,4 +66,4 @@ Every store, big store, security room, plaza, hall, escalator, and tunnel must b
 
 ### Acceptance
 
-A map is kept only when it contains every requested store, escalator, and tunnel pair, no escalator end leads nowhere, and the master rule holds. When a map fails, the same hall count is redrawn several times, and if none pass the hall count is raised and the process repeats. Same seed and settings always produce the same map.
+A map is kept only when it contains every requested store, escalator, and tunnel pair, no escalator end leads nowhere, and the master rule holds. When a map falls short on capacity, the same hall count is redrawn several times, and if none fit the hall count is raised and the process repeats. When it only breaks a rule, it gets a larger redraw budget at the same count first. The tightest passing map is then pruned of any hall it does not need. Same seed and settings always produce the same map.
