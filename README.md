@@ -17,6 +17,7 @@ A seed is any text. The same seed and settings always produce the same map, so s
 
 - Blue edge = open, red edge = wall.
 - Escalator arrows show the one-way direction.
+- The small number in a store's corner is its placement order, for counting.
 - Tunnels with the same letter connect.
 
 ## Generation rules
@@ -31,7 +32,7 @@ A seed is any text. The same seed and settings always produce the same map, so s
 
 - **Minimum hall count.** Every generation searches up from the smallest possible skeleton (the 4 corridor halls). The count is raised by one only when something did not fit: a store, big store, escalator, or tunnel pair. A failure of a rule instead, such as a stranded piece or an escalator end leading nowhere, earns more redraws at the same count rather than more halls. The Halls box only displays the total of the kept map.
 - **Prune.** Once a map passes, every spur hall is tried for removal, deepest first and together with its mirror when possible. Its rooms are moved to other free storefronts and every rule is checked again. The removal sticks only if every room found a home and the map still passes, so no hall survives whose stores could have lived elsewhere.
-- **Connection.** Every spur hall must have at least one side touching a hall, plaza, or escalator, and that neighbour's facing edge must be open (blue). Touching a wall edge does not count.
+- **Connection.** Every spur hall must have at least one side touching a hall, plaza, or escalator, and that neighbour's facing edge must be open (blue). Touching a wall edge does not count. The whole hall network must hang off the plazas this way, hall to hall, without leaning on a tunnel, and that is re-checked whenever a hall is removed.
 - **Long side rule.** Two halls may never touch long side to long side. A hall may attach its short end to another hall's long side, or short end to short end.
 - **One per long side.** No more than one hall may attach anywhere along a given hall's long side.
 - **Plazas.** A hall may only touch a plaza with its short end. A hall lying flat along a plaza edge is never placed, because it removes storefronts instead of adding them.

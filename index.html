@@ -714,12 +714,35 @@ function generate(seedText, settings) {
     const backwardReach = reachableFrom(nodes[0], entriesInto);
     return nodes.filter(node => !forwardReach.has(node) || !backwardReach.has(node)).length;
   }
+  // every hall and escalator must hang off the plazas through open edges,
+  // hall to hall, without leaning on a tunnel. Returns how many do not.
+  function countDetachedHalls() {
+    const network = pieces.filter(piece => CONNECTORS.includes(piece.type));
+    const reached = new Set(network.filter(piece => piece.type === "plaza"));
+    const queue = [...reached];
+    while (queue.length) {
+      const piece = queue.pop();
+      for (const side of piece.openSides || []) {
+        for (const [cellX, cellY] of cellsOutside(piece, side)) {
+          const neighbor = pieceAt(grid, cellX, cellY);
+          if (!neighbor || reached.has(neighbor) || !CONNECTORS.includes(neighbor.type)) continue;
+          if (!(neighbor.openSides || []).includes(OPPOSITE_SIDE[side])) continue;
+          reached.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+    }
+    return network.length - reached.size;
+  }
   // the rule checks on the board as it stands right now
   function evaluate() {
     const emptyHalls = pieces.filter(piece => piece.type === "hall" && !hasStorefront(piece)).length;
     const unusedEscalatorEnds = pieces.filter(piece => piece.type === "escalator")
       .reduce((total, escalator) => total + openEndsOf(escalator).filter(side => !leadsSomewhere(escalator, side)).length, 0);
-    return { emptyHalls, unusedEscalatorEnds, stranded: countStranded(), freeStoreSpots: legalStoreSpots().length };
+    return {
+      emptyHalls, unusedEscalatorEnds, stranded: countStranded(), detachedHalls: countDetachedHalls(),
+      freeStoreSpots: legalStoreSpots().length,
+    };
   }
 
   // --- 7. prune: drop any hall whose rooms can live somewhere else ---
@@ -753,7 +776,9 @@ function generate(seedText, settings) {
     fillStores(savedStores, savedSecurity);
     const everyRoomHomed = storeCount === savedStores && securityCount === savedSecurity && bigStoreCount === savedBigStores;
     const check = everyRoomHomed ? evaluate() : null;
-    if (check && check.stranded === 0 && check.unusedEscalatorEnds === 0 && check.emptyHalls <= allowedEmptyHalls) return true;
+    const passes = check && check.stranded === 0 && check.detachedHalls === 0
+      && check.unusedEscalatorEnds === 0 && check.emptyHalls <= allowedEmptyHalls;
+    if (passes) return true;
     restore(savedPieces);
     storeCount = savedStores; securityCount = savedSecurity; bigStoreCount = savedBigStores;
     return false;
@@ -779,8 +804,9 @@ function generate(seedText, settings) {
     }
   }
 
-  const { emptyHalls, unusedEscalatorEnds, stranded, freeStoreSpots } = evaluate();
+  const { emptyHalls, unusedEscalatorEnds, stranded, detachedHalls, freeStoreSpots } = evaluate();
   if (emptyHalls) notes.push(plural(emptyHalls, "hall") + " with no store.");
+  if (detachedHalls) notes.push(plural(detachedHalls, "hall") + " not connected.");
   if (unusedEscalatorEnds) notes.push(plural(unusedEscalatorEnds, "escalator end") + " leading nowhere.");
   if (stranded) notes.push("Not every store can reach every other store.");
 
@@ -788,7 +814,7 @@ function generate(seedText, settings) {
     pieces, notes,
     counts: {
       stores: storeCount, security: securityCount, bigStores: bigStoreCount, escalators: escalatorCount,
-      tunnelPairs: tunnelPairCount, hallsApart, halls: countHalls(), emptyHalls, unusedEscalatorEnds, stranded, freeStoreSpots,
+      tunnelPairs: tunnelPairCount, hallsApart, halls: countHalls(), emptyHalls, unusedEscalatorEnds, stranded, detachedHalls, freeStoreSpots,
     },
   };
 }
@@ -844,6 +870,7 @@ function render(result, seedText) {
     viewBox: `${minX * CELL_SIZE - MARGIN} ${minY * CELL_SIZE - MARGIN} ${boardWidth} ${boardHeight}`,
   });
 
+  let storeNumber = 0;
   for (const piece of result.pieces) {
     const left = piece.x * CELL_SIZE, top = piece.y * CELL_SIZE;
     const width = piece.width * CELL_SIZE, height = piece.height * CELL_SIZE;
@@ -888,6 +915,21 @@ function render(result, seedText) {
         if (piece.direction === "up")    path = `M ${arrowX - arrowSize} ${arrowY + arrowSize} L ${arrowX} ${arrowY - arrowSize} L ${arrowX + arrowSize} ${arrowY + arrowSize} Z`;
         svg.appendChild(svgElement("path", { d: path, fill: "#eee", stroke: "#999", "stroke-width": 1 }));
       }
+    }
+
+    // small store number in the top right corner, in placement order
+    if (piece.type === "store") {
+      storeNumber++;
+      const number = svgElement("text", {
+        x: left + width - EDGE_THICKNESS - 2, y: top + EDGE_THICKNESS + 9,
+        "text-anchor": "end",
+        "font-size": 9,
+        "font-weight": 700,
+        fill: "#f0ede4",
+        "font-family": "system-ui, sans-serif",
+      });
+      number.textContent = storeNumber;
+      svg.appendChild(number);
     }
 
     // label: big store number, security text, tunnel letter
@@ -967,7 +1009,7 @@ function run(useStarter) {
         const counts = attempt.counts;
         const lacksCapacity = counts.stores < settings.stores || counts.bigStores < 4
           || counts.escalators < settings.escalators || counts.tunnelPairs < settings.tunnelPairs;
-        const breaksRules = counts.unusedEscalatorEnds > 0 || counts.stranded > 0;
+        const breaksRules = counts.unusedEscalatorEnds > 0 || counts.stranded > 0 || counts.detachedHalls > 0;
         if (lacksCapacity) continue;
         if (breaksRules) { redrawBudget = RULE_REDRAW_LIMIT; continue; }
         if (!bestFit || tighter(counts, bestFit.counts)) {
