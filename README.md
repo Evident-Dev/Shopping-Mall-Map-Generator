@@ -26,7 +26,7 @@ A seed is any text. The same seed and settings always produce the same map, so s
 
 - **Plazas.** Two 4×4 plazas placed as a mirrored pair, one left and one right of the board's centre line. The gap between them is 2 or 3 hall lengths. It is 3 whenever the hall count is 6 or more, and always 3 for the starter mall.
 - **Corridors.** Two rows of 2×1 halls run between the plazas, one along the top edge of the plazas and one along the bottom. These corridor halls plus the plazas are the core and count as depth 0.
-- **Big stores.** Exactly four, numbered 1 to 4, placed once the halls exist. Each takes a random legal spot: its 4-cell door edge sits either on a plaza's top, bottom, or outer side, or across exactly two end-to-end halls, corridor or spur. When a spot is taken its mirror is used next if that is legal too. With **Lock large store to plaza** ticked only plaza sides count. The starter mall always uses two per plaza, top and bottom.
+- **Big stores.** Exactly four, numbered 1 to 4, placed once the halls exist and before any spur hall turns into an escalator, so escalators cannot eat the hall pairs they need. Each takes a random legal spot: its 4-cell door edge sits either on a plaza's top, bottom, or outer side, or across exactly two end-to-end halls, corridor or spur. When a spot is taken its mirror is used next if that is legal too. With **Lock large store to plaza** ticked only plaza sides count. The starter mall always uses two per plaza, top and bottom.
 
 ### Halls
 
@@ -37,7 +37,7 @@ A seed is any text. The same seed and settings always produce the same map, so s
 - **One per long side.** No more than one hall may attach anywhere along a given hall's long side.
 - **Plazas.** A hall may only touch a plaza with its short end. A hall lying flat along a plaza edge is never placed, because it removes storefronts instead of adding them.
 - **Mirroring.** When a spur is placed, its left/right mirror is also placed if that spot is empty, legal, and the hall count allows it.
-- **No empty halls.** Every hall must end up with at least one store or the security room on one of its sides. Escalators are exempt because nothing can attach to them. For a given hall count several redraws are tried and the tightest one is kept: fewest free storefronts left over, then fewest empty halls.
+- **No empty halls.** Every hall must end up with at least one store or the security room on one of its sides; a map with a store-less hall is rejected and earns more redraws at the same count. Escalators are exempt because nothing can attach to them. Among clean redraws the tightest is kept: fewest free storefronts left over. Only when no count within a few of the first near-miss passes clean is the attempt with the fewest empty halls kept, and the prune pass still gets to remove those halls.
 
 ### Stores and security
 
@@ -66,4 +66,4 @@ Every store, big store, security room, plaza, hall, escalator, and tunnel must b
 
 ### Acceptance
 
-A map is kept only when it contains every requested store, escalator, and tunnel pair, no escalator end leads nowhere, and the master rule holds. When a map falls short on capacity, the same hall count is redrawn several times, and if none fit the hall count is raised and the process repeats. When it only breaks a rule, it gets a larger redraw budget at the same count first. The tightest passing map is then pruned of any hall it does not need. Same seed and settings always produce the same map.
+A map is kept only when it contains every requested store, escalator, and tunnel pair, no escalator end leads nowhere, and the master rule holds. When a map falls short on capacity, the same hall count is redrawn several times, and if none fit the hall count is raised and the process repeats. When it only breaks a rule, or the big stores ran out of room, it gets a larger redraw budget at the same count first, since extra halls do not help there. If nothing ever fits, the closest attempt is shown with a note. The tightest passing map is then pruned of any hall it does not need. Same seed and settings always produce the same map.
