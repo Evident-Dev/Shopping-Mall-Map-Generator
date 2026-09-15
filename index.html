@@ -155,6 +155,10 @@
     display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   }
   header .secondary { padding: 0 16px; }
+  header .buttons { display: flex; align-items: center; gap: 10px; }
+  header .icon-only { width: 44px; padding: 0; }
+  #music .icon-on, #music[data-playing="false"] .icon-off { display: block; }
+  #music .icon-off, #music[data-playing="false"] .icon-on { display: none; }
   .secondary:disabled { color: var(--muted); }
   .secondary svg { width: 16px; height: 16px; }
   .row { display: flex; gap: 10px; }
@@ -212,11 +216,19 @@
     <h1>Mall Map Generator</h1>
     <div class="underline"></div>
   </div>
-  <button id="save" class="secondary" title="Save PNG">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M4 19h16"></path></svg>
-    <span class="label">Save PNG</span>
-  </button>
+  <div class="buttons">
+    <button id="music" class="secondary icon-only" type="button" aria-pressed="true" aria-label="Mute music">
+      <svg class="icon-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></svg>
+      <svg class="icon-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"></path><path d="m16 9 5 6"></path><path d="m21 9-5 6"></path></svg>
+    </button>
+    <button id="save" class="secondary" title="Save PNG">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M4 19h16"></path></svg>
+      <span class="label">Save PNG</span>
+    </button>
+  </div>
 </header>
+
+<audio id="music-track" src="assets/empty-concourse.mp3" loop preload="auto"></audio>
 
 <main>
   <div class="panel">
@@ -1486,6 +1498,34 @@ document.getElementById("save").addEventListener("click", () => {
   image.src = svgUrl;
 });
 run(true);
+
+const musicButton = document.getElementById("music");
+const musicTrack = document.getElementById("music-track");
+musicTrack.volume = 0.4;
+let musicOn = true;
+
+function updateMusicButton() {
+  musicButton.dataset.playing = musicOn ? "true" : "false";
+  musicButton.setAttribute("aria-pressed", musicOn ? "true" : "false");
+  musicButton.setAttribute("aria-label", musicOn ? "Mute music" : "Play music");
+  musicButton.title = musicOn ? "Mute music" : "Play music";
+}
+
+musicButton.addEventListener("click", () => {
+  musicOn = !musicOn;
+  if (musicOn) musicTrack.play().catch(() => {});
+  else musicTrack.pause();
+  updateMusicButton();
+});
+
+// browsers block autoplay until the page has been clicked, so try again on the first press
+document.addEventListener("pointerdown", function startOnFirstGesture() {
+  if (musicOn) musicTrack.play().catch(() => {});
+  document.removeEventListener("pointerdown", startOnFirstGesture);
+});
+
+updateMusicButton();
+musicTrack.play().catch(() => {});
 </script>
 </body>
 </html>
