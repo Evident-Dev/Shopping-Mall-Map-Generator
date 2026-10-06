@@ -236,7 +236,7 @@
       <div class="name">Stores</div>
       <div class="count">
         <button type="button" data-step="-1" data-for="numStores" aria-label="Fewer stores">−</button>
-        <input type="number" id="numStores" value="16" min="0" max="26">
+        <input type="number" id="numStores" value="16" min="0" max="35">
         <button type="button" data-step="1" data-for="numStores" aria-label="More stores">+</button>
       </div>
     </div>
@@ -1311,7 +1311,7 @@ function render(result, seedText, themeKey) {
 // ---------- wiring ----------
 // first-game layout: fixed settings, whatever the boxes say
 const STARTER_SETTINGS = { halls: 6, stores: 15, escalators: 0, tunnelPairs: 0, starter: true };
-const STORE_LIMIT = 26, ESCALATOR_LIMIT = 8, TUNNEL_PAIR_LIMIT = 3;
+const STORE_LIMIT = 35, ESCALATOR_LIMIT = 8, TUNNEL_PAIR_LIMIT = 3;
 // how many redraws to try at one hall count, how many more when only a rule
 // failed, and how far the count may climb
 const REDRAW_LIMIT = 12, RULE_REDRAW_LIMIT = 36, HALL_LIMIT = 60;
