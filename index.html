@@ -241,6 +241,14 @@
       </div>
     </div>
     <div class="stepper">
+      <div class="name">Large stores</div>
+      <div class="count">
+        <button type="button" data-step="-1" data-for="numBigStores" aria-label="Fewer large stores">−</button>
+        <input type="number" id="numBigStores" value="4" min="2" max="4">
+        <button type="button" data-step="1" data-for="numBigStores" aria-label="More large stores">+</button>
+      </div>
+    </div>
+    <div class="stepper">
       <div class="name">Escalators</div>
       <div class="count">
         <button type="button" data-step="-1" data-for="numEscalators" aria-label="Fewer escalators">−</button>
@@ -555,17 +563,17 @@ function generate(seedText, settings) {
   // otherwise it waits until the halls and escalators exist.
   function placeBigStores() {
     let attempts = 0;
-    while (bigStoreCount < 4 && attempts++ < 20) {
+    while (bigStoreCount < settings.bigStores && attempts++ < 20) {
       const spots = shuffle(legalBigStoreSpots(), random);
       if (!spots.length) break;
       const spot = spots[0];
       placeBigStore(spot);
-      if (bigStoreCount >= 4) break;
+      if (bigStoreCount >= settings.bigStores) break;
       const mirrorSpot = { x: mirroredX(spot), y: spot.y, width: spot.width, height: spot.height, side: mirrorSide(spot.side) };
       const spotKey = candidate => [candidate.x, candidate.y, candidate.width, candidate.height, candidate.side].join();
       if (legalBigStoreSpots().some(candidate => spotKey(candidate) === spotKey(mirrorSpot))) placeBigStore(mirrorSpot);
     }
-    if (bigStoreCount < 4) notes.push("Only " + plural(bigStoreCount, "big store") + " fit.");
+    if (bigStoreCount < settings.bigStores) notes.push("Only " + plural(bigStoreCount, "big store") + " fit.");
   }
 
   // --- 5. security + stores: 2x1, blue long side flush to hallway or plaza ---
@@ -1310,8 +1318,9 @@ function render(result, seedText, themeKey) {
 
 // ---------- wiring ----------
 // first-game layout: fixed settings, whatever the boxes say
-const STARTER_SETTINGS = { halls: 6, stores: 15, escalators: 0, tunnelPairs: 0, starter: true };
+const STARTER_SETTINGS = { halls: 6, stores: 15, bigStores: 4, escalators: 0, tunnelPairs: 0, starter: true };
 const STORE_LIMIT = 35, ESCALATOR_LIMIT = 8, TUNNEL_PAIR_LIMIT = 3;
+const BIG_STORE_MIN = 2, BIG_STORE_LIMIT = 4;
 // how many redraws to try at one hall count, how many more when only a rule
 // failed, and how far the count may climb
 const REDRAW_LIMIT = 12, RULE_REDRAW_LIMIT = 36, HALL_LIMIT = 60;
@@ -1349,9 +1358,9 @@ window.addEventListener("resize", fitBoardToViewport);
 function run(useStarter) {
   const seed = document.getElementById("seed").value || "mall";
   // read a number box, clamp it to its limit, and write the clamped value back
-  const readCount = (boxId, limit) => {
+  const readCount = (boxId, limit, minimum = 0) => {
     const box = document.getElementById(boxId);
-    const value = Math.min(Math.max(0, +box.value || 0), limit);
+    const value = Math.min(Math.max(minimum, +box.value || 0), limit);
     box.value = value;
     return value;
   };
@@ -1360,6 +1369,7 @@ function run(useStarter) {
     // halls), so every seed gets its own minimum hall count
     halls: 4,
     stores: readCount("numStores", STORE_LIMIT),
+    bigStores: readCount("numBigStores", BIG_STORE_LIMIT, BIG_STORE_MIN),
     escalators: readCount("numEscalators", ESCALATOR_LIMIT),
     tunnelPairs: readCount("numTunnelPairs", TUNNEL_PAIR_LIMIT),
     lockBigStores: document.getElementById("lockBigStores").checked,
@@ -1401,13 +1411,13 @@ function run(useStarter) {
         const attempt = generate(attemptSeed, searchSettings);
         result = attempt;
         const counts = attempt.counts;
-        const gap = (settings.stores - counts.stores) + (4 - counts.bigStores) * 4
+        const gap = (settings.stores - counts.stores) + (settings.bigStores - counts.bigStores) * 4
           + (settings.escalators - counts.escalators) + (settings.tunnelPairs - counts.tunnelPairs) * 2
           + counts.unusedEscalatorEnds + counts.stranded + counts.detachedHalls + counts.emptyHalls;
         if (gap < closestGap) { closest = attempt; closestSeed = attemptSeed; closestHalls = halls; closestGap = gap; }
         const lacksCapacity = counts.stores < settings.stores
           || counts.escalators < settings.escalators || counts.tunnelPairs < settings.tunnelPairs;
-        const breaksRules = counts.bigStores < 4 || counts.unusedEscalatorEnds > 0 || counts.stranded > 0 || counts.detachedHalls > 0;
+        const breaksRules = counts.bigStores < settings.bigStores || counts.unusedEscalatorEnds > 0 || counts.stranded > 0 || counts.detachedHalls > 0;
         if (lacksCapacity) continue;
         if (breaksRules) { redrawBudget = RULE_REDRAW_LIMIT; continue; }
         if (counts.emptyHalls > 0) {
@@ -1445,7 +1455,7 @@ function run(useStarter) {
   refreshGenerateButton();
 }
 
-const SETTING_BOX_IDS = ["seed", "numStores", "numEscalators", "numTunnelPairs", "lockBigStores"];
+const SETTING_BOX_IDS = ["seed", "numStores", "numBigStores", "numEscalators", "numTunnelPairs", "lockBigStores"];
 const settingsSnapshot = () => SETTING_BOX_IDS.map(boxId => {
   const box = document.getElementById(boxId);
   return box.type === "checkbox" ? box.checked : box.value;
