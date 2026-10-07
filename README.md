@@ -6,7 +6,7 @@ https://evident-dev.github.io/Shopping-Mall-Map-Generator/
 ## Generating a map
 
 1. Click **Generate random map**, or type a seed and click **Generate this seed**.
-2. Set stores, escalators and tunnel pairs. The Halls box just shows the total: the generator always finds the fewest halls that fit the request for that seed. Tick **Lock large store to plaza** to keep the big stores on the plazas.
+2. Set stores, large stores (2 to 4), escalators and tunnel pairs. The Halls box just shows the total: the generator always finds the fewest halls that fit the request for that seed. Tick **Lock large store to plaza** to keep the big stores on the plazas.
 3. Pick a **Theme** for the board art, then **Save PNG**. **Starter mall** gives the first-game layout, which is what the page opens on.
 
 ## Seeds
@@ -26,7 +26,7 @@ A seed is any text. The same seed and settings always produce the same map, so s
 
 - **Plazas.** Two 4×4 plazas placed as a mirrored pair, one left and one right of the board's centre line. The gap between them is 2 or 3 hall lengths. It is 3 whenever the hall count is 6 or more, and always 3 for the starter mall.
 - **Corridors.** Two rows of 2×1 halls run between the plazas, one along the top edge of the plazas and one along the bottom. These corridor halls plus the plazas are the core and count as depth 0.
-- **Big stores.** Exactly four, numbered 1 to 4, placed once the halls exist and before any spur hall turns into an escalator, so escalators cannot eat the hall pairs they need. Each takes a random legal spot: its 4-cell door edge sits either on a plaza's top, bottom, or outer side, or across exactly two end-to-end halls, corridor or spur. When a spot is taken its mirror is used next if that is legal too. With **Lock large store to plaza** ticked only plaza sides count. The starter mall always uses two per plaza, top and bottom.
+- **Big stores.** Set by the **Large stores** box, 2 to 4 (default 4), numbered from 1, placed once the halls exist and before any spur hall turns into an escalator, so escalators cannot eat the hall pairs they need. Each takes a random legal spot: its 4-cell door edge sits either on a plaza's top, bottom, or outer side, or across exactly two end-to-end halls, corridor or spur. When a spot is taken its mirror is used next if that is legal too. With **Lock large store to plaza** ticked only plaza sides count. The starter mall always uses two per plaza, top and bottom.
 
 ### Halls
 
